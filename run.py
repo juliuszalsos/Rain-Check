@@ -95,7 +95,7 @@ def init_database():
 class MainApplicationWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Umbrella Management Database System")
+        self.setWindowTitle("Raincheck")
         self.setGeometry(100, 100, 1000, 700)
 
         self.tabs = QTabWidget()
