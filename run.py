@@ -45,17 +45,23 @@ def init_database():
         try:
             conn = sqlite3.connect(DB_FILE)
             c = conn.cursor()
-            c.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='Umbrella'")
-            if c.fetchone():
-                c.execute("SELECT umbrella_id FROM Umbrella LIMIT 1")
-                row = c.fetchone()
-                if row and row[0].startswith("RC-"):
-                    conn.close()
-                    os.remove(DB_FILE)
-                else:
-                    conn.close()
-            else:
-                conn.close()
+            c.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='rents'")
+            has_rents = c.fetchone()
+            c.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='returns'")
+            has_returns = c.fetchone()
+            c.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='RENTAL'")
+            has_rental = c.fetchone()
+            
+            if has_rents or has_returns or not has_rental:
+                c.execute("DROP TABLE IF EXISTS returns")
+                c.execute("DROP TABLE IF EXISTS rents")
+                c.execute("DROP TABLE IF EXISTS RENTAL")
+                c.execute("DROP TABLE IF EXISTS penalty")
+                c.execute("DROP TABLE IF EXISTS payments")
+                c.execute("DROP TABLE IF EXISTS Umbrella")
+                c.execute("DROP TABLE IF EXISTS USER")
+                conn.commit()
+            conn.close()
         except Exception:
             pass
 
@@ -82,31 +88,22 @@ def init_database():
         )
     """)
 
-    # 3. rents Table
+    # 3. RENTAL Table (combined rents and returns)
     cursor.execute("""
-        CREATE TABLE IF NOT EXISTS rents (
-            rent_id TEXT PRIMARY KEY,
+        CREATE TABLE IF NOT EXISTS RENTAL (
+            rental_id TEXT PRIMARY KEY,
             user_id TEXT,
             umbrella_id TEXT,
             rent_date TEXT,
             due_date TEXT,
+            return_date TEXT,
+            return_condition TEXT,
             FOREIGN KEY(user_id) REFERENCES USER(user_id),
             FOREIGN KEY(umbrella_id) REFERENCES Umbrella(umbrella_id)
         )
     """)
 
-    # 4. returns Table
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS returns (
-            return_id INTEGER PRIMARY KEY AUTOINCREMENT,
-            rent_id TEXT,
-            return_date TEXT,
-            return_condition TEXT,
-            FOREIGN KEY(rent_id) REFERENCES rents(rent_id)
-        )
-    """)
-
-    # 5. penalty Table
+    # 4. penalty Table
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS penalty (
             penalty_id TEXT PRIMARY KEY,
@@ -167,7 +164,7 @@ def init_database():
             )
         conn.commit()
 
-    # Seed 60 total Umbrellas (U-001 up to U-060)
+    # Seed 60 total Umbrellas (U-001 total to U-060)
     cursor.execute("SELECT COUNT(*) FROM Umbrella")
     if cursor.fetchone()[0] == 0:
         for i in range(1, 61):
@@ -188,7 +185,7 @@ def init_database():
         conn.commit()
 
     # Seed 14 Active Rentals with exactly 3 of them overdue
-    cursor.execute("SELECT COUNT(*) FROM rents")
+    cursor.execute("SELECT COUNT(*) FROM RENTAL")
     if cursor.fetchone()[0] == 0:
         cursor.execute("SELECT user_id FROM USER ORDER BY user_id ASC")
         users = [r[0] for r in cursor.fetchall()]
@@ -222,7 +219,7 @@ def init_database():
                 hr_d = 12
             due_str = f"{due_dt.year}-{due_dt.month:02d}-{due_dt.day:02d} {hr_d:02d}:{due_dt.minute:02d} {ampm_d}"
             
-            cursor.execute("INSERT INTO rents (rent_id, user_id, umbrella_id, rent_date, due_date) VALUES (?, ?, ?, ?, ?)",
+            cursor.execute("INSERT INTO RENTAL (rental_id, user_id, umbrella_id, rent_date, due_date, return_date, return_condition) VALUES (?, ?, ?, ?, ?, NULL, NULL)",
                            (rent_id, user_id, umb_id, rent_str, due_str))
             
         conn.commit()
@@ -396,8 +393,8 @@ class DashboardPage(QWidget):
         self.return_action_btn = BigActionButton("↩", "RETURN UMBRELLA", self)
         
         # Connect actions
-        self.rent_action_btn.clicked.connect(lambda: self.main_win.switch_view(1))
-        self.return_action_btn.clicked.connect(lambda: self.main_win.switch_view(2))
+        self.rent_action_btn.clicked.connect(lambda: self.main_win.switch_view(1, 0))
+        self.return_action_btn.clicked.connect(lambda: self.main_win.switch_view(1, 1))
         
         actions_layout.addWidget(self.rent_action_btn)
         actions_layout.addWidget(self.return_action_btn)
@@ -760,15 +757,45 @@ class DashboardPage(QWidget):
         prev_btn.clicked.connect(lambda: self.set_page(self.current_page - 1))
         self.pages_layout.addWidget(prev_btn)
         
-        # Numbers
-        for i in range(self.total_pages):
-            page_btn = QPushButton(str(i + 1))
-            page_btn.setFixedSize(26, 26)
-            page_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-            is_active = (i == self.current_page)
-            page_btn.setStyleSheet(self.get_pagination_button_style(True, is_active))
-            page_btn.clicked.connect(lambda checked, p=i: self.set_page(p))
-            self.pages_layout.addWidget(page_btn)
+        # Sliding window calculation
+        pages_to_show = []
+        if self.total_pages <= 7:
+            pages_to_show = list(range(self.total_pages))
+        else:
+            middle_start = max(1, self.current_page - 1)
+            middle_end = min(self.total_pages - 2, self.current_page + 1)
+            
+            if self.current_page <= 2:
+                middle_start = 1
+                middle_end = 3
+            elif self.current_page >= self.total_pages - 3:
+                middle_start = self.total_pages - 4
+                middle_end = self.total_pages - 2
+                
+            pages_to_show.append(0)
+            if middle_start > 1:
+                pages_to_show.append("...")
+            for i in range(middle_start, middle_end + 1):
+                pages_to_show.append(i)
+            if middle_end < self.total_pages - 2:
+                pages_to_show.append("...")
+            pages_to_show.append(self.total_pages - 1)
+            
+        for item in pages_to_show:
+            if item == "...":
+                dots = QLabel("...")
+                dots.setStyleSheet("color: #6b7280; font-size: 11px; font-family: 'Segoe UI', Arial, sans-serif;")
+                dots.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                dots.setFixedSize(26, 26)
+                self.pages_layout.addWidget(dots)
+            else:
+                page_btn = QPushButton(str(item + 1))
+                page_btn.setFixedSize(26, 26)
+                page_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+                is_active = (item == self.current_page)
+                page_btn.setStyleSheet(self.get_pagination_button_style(True, is_active))
+                page_btn.clicked.connect(lambda checked, p=item: self.set_page(p))
+                self.pages_layout.addWidget(page_btn)
             
         # Right arrow
         next_btn = QPushButton("›")
@@ -789,7 +816,7 @@ class DashboardPage(QWidget):
             
             cursor.execute("""
                 SELECT 
-                    r.rent_id,
+                    r.rental_id,
                     u.first_name,
                     u.last_name,
                     u.m_i,
@@ -797,10 +824,9 @@ class DashboardPage(QWidget):
                     r.umbrella_id,
                     r.rent_date,
                     r.due_date
-                FROM rents r
+                FROM RENTAL r
                 JOIN USER u ON r.user_id = u.user_id
-                LEFT JOIN returns ret ON r.rent_id = ret.rent_id
-                WHERE ret.return_id IS NULL
+                WHERE r.return_date IS NULL OR r.return_date = ''
                 ORDER BY r.due_date ASC
             """)
             raw_data = cursor.fetchall()
@@ -1212,6 +1238,41 @@ class RentPage(QWidget):
         self.selection_form_widget.show()
         self.confirm_btn.setEnabled(False)
         self.load_available_umbrellas()
+        self.setup_autocomplete()
+
+    def setup_autocomplete(self):
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            cursor.execute("SELECT user_id, first_name, last_name, m_i, rfid_uid FROM USER")
+            rows = cursor.fetchall()
+            conn.close()
+            
+            suggestions = []
+            for uid, fn, ln, mi, rfid in rows:
+                mi_str = f" {mi}." if mi else ""
+                full_name = f"{fn}{mi_str} {ln}"
+                rfid_str = f" - RFID: {rfid}" if rfid else ""
+                suggestions.append(f"{full_name} ({uid}){rfid_str}")
+                
+            from PyQt6.QtWidgets import QCompleter
+            completer = QCompleter(suggestions, self)
+            completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
+            completer.setFilterMode(Qt.MatchFlag.MatchContains)
+            completer.setMaxVisibleItems(10)
+            
+            completer.activated.connect(self.on_completer_activated)
+            self.search_input.setCompleter(completer)
+        except Exception as e:
+            print(f"Error setting up autocomplete: {e}")
+
+    def on_completer_activated(self, text):
+        import re
+        match = re.search(r"\(([^)]+)\)", text)
+        if match:
+            user_id = match.group(1)
+            self.search_input.setText(user_id)
+            self.search_user_changed(user_id)
 
     def load_available_umbrellas(self):
         try:
@@ -1229,7 +1290,20 @@ class RentPage(QWidget):
             print(f"Error loading umbrellas dropdown: {e}")
 
     def search_user_changed(self, text):
-        query_str = self.search_input.text().strip()
+        import re
+        txt_to_parse = str(text) if text is not None else ""
+        match = re.search(r"\(([^)]+)\)", txt_to_parse)
+        if match:
+            query_str = match.group(1).strip()
+            self.search_input.setText(query_str)
+        else:
+            full_txt = self.search_input.text().strip()
+            sub_match = re.search(r"\(([^)]+)\)", full_txt)
+            if sub_match:
+                query_str = sub_match.group(1).strip()
+                self.search_input.setText(query_str)
+            else:
+                query_str = full_txt
         
         # Safe Reset: Keeps the UI clean if they hit enter on an empty input
         if not query_str:
@@ -1268,9 +1342,8 @@ class RentPage(QWidget):
                 
                 # Check active rent holds
                 cursor.execute("""
-                    SELECT count(*) FROM rents r 
-                    LEFT JOIN returns ret ON r.rent_id = ret.rent_id 
-                    WHERE r.user_id = ? AND ret.return_id IS NULL
+                    SELECT count(*) FROM RENTAL r 
+                    WHERE r.user_id = ? AND (r.return_date IS NULL OR r.return_date = '')
                 """, (user_id,))
                 active_holds = cursor.fetchone()[0]
                 
@@ -1355,7 +1428,7 @@ class RentPage(QWidget):
             now = datetime.now()
             date_prefix = now.strftime("%m%d%y")
             
-            cursor.execute("SELECT rent_id FROM rents WHERE rent_id LIKE ? ORDER BY rent_id DESC LIMIT 1", (f"{date_prefix}-%",))
+            cursor.execute("SELECT rental_id FROM RENTAL WHERE rental_id LIKE ? ORDER BY rental_id DESC LIMIT 1", (f"{date_prefix}-%",))
             last_rent = cursor.fetchone()
             new_sequence = int(last_rent[0].split("-")[1]) + 1 if last_rent else 1
             custom_rent_id = f"{date_prefix}-{new_sequence:03d}"
@@ -1375,8 +1448,10 @@ class RentPage(QWidget):
             due_date_str = f"{due_dt.year}-{due_dt.month:02d}-{due_dt.day:02d} {hours_due:02d}:{due_dt.minute:02d} {ampm_due}"
             
             # Perform rent transaction
-            cursor.execute("INSERT INTO rents (rent_id, user_id, umbrella_id, rent_date, due_date) VALUES (?, ?, ?, ?, ?)",
-                           (custom_rent_id, user_id, umbrella_id, rent_date_str, due_date_str))
+            cursor.execute("""
+                INSERT INTO RENTAL (rental_id, user_id, umbrella_id, rent_date, due_date, return_date, return_condition)
+                VALUES (?, ?, ?, ?, ?, NULL, NULL)
+            """, (custom_rent_id, user_id, umbrella_id, rent_date_str, due_date_str))
             cursor.execute("UPDATE Umbrella SET current_status = 'Rented' WHERE umbrella_id = ?", (umbrella_id,))
             
             conn.commit()
@@ -1583,6 +1658,44 @@ class ReturnPage(QWidget):
         
         self.select_good_condition()
         self.process_btn.setEnabled(False)
+        self.setup_autocomplete()
+
+    def setup_autocomplete(self):
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT r.rental_id, r.user_id, r.umbrella_id, u.first_name, u.last_name
+                FROM RENTAL r
+                JOIN USER u ON r.user_id = u.user_id
+                WHERE r.return_date IS NULL OR r.return_date = ''
+            """)
+            rows = cursor.fetchall()
+            conn.close()
+            
+            suggestions = []
+            for rent_id, user_id, umb_id, fn, ln in rows:
+                full_name = f"{fn} {ln}"
+                suggestions.append(f"{full_name} ({user_id}) - Umbrella: {umb_id} - Rent ID: {rent_id}")
+                
+            from PyQt6.QtWidgets import QCompleter
+            completer = QCompleter(suggestions, self)
+            completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
+            completer.setFilterMode(Qt.MatchFlag.MatchContains)
+            completer.setMaxVisibleItems(10)
+            
+            completer.activated.connect(self.on_completer_activated)
+            self.search_input.setCompleter(completer)
+        except Exception as e:
+            print(f"Error setting up return autocomplete: {e}")
+
+    def on_completer_activated(self, text):
+        import re
+        match = re.search(r"\(([^)]+)\)", text)
+        if match:
+            user_id = match.group(1)
+            self.search_input.setText(user_id)
+            self.search_active_rental(user_id)
 
     def select_good_condition(self):
         self.selected_condition = "Good"
@@ -1612,7 +1725,21 @@ class ReturnPage(QWidget):
         self.lost_opt_card.update_style()
 
     def search_active_rental(self, text):
-        query_str = text.strip()
+        import re
+        txt_to_parse = str(text) if text is not None else ""
+        match = re.search(r"\(([^)]+)\)", txt_to_parse)
+        if match:
+            query_str = match.group(1).strip()
+            self.search_input.setText(query_str)
+        else:
+            full_txt = self.search_input.text().strip()
+            sub_match = re.search(r"\(([^)]+)\)", full_txt)
+            if sub_match:
+                query_str = sub_match.group(1).strip()
+                self.search_input.setText(query_str)
+            else:
+                query_str = full_txt
+                
         if not query_str:
             self.active_rent = None
             self.user_lbl.setText("👤 User:      --")
@@ -1630,11 +1757,10 @@ class ReturnPage(QWidget):
             
             # Strict verification matching: only look for User ID or Rent ID
             cursor.execute("""
-                SELECT r.rent_id, r.user_id, r.umbrella_id, r.rent_date, r.due_date, u.first_name, u.last_name
-                FROM rents r
+                SELECT r.rental_id, r.user_id, r.umbrella_id, r.rent_date, r.due_date, u.first_name, u.last_name
+                FROM RENTAL r
                 JOIN USER u ON r.user_id = u.user_id
-                LEFT JOIN returns ret ON r.rent_id = ret.rent_id
-                WHERE ret.return_id IS NULL AND (r.user_id = ? OR r.rent_id = ?)
+                WHERE (r.return_date IS NULL OR r.return_date = '') AND (r.user_id = ? OR r.rental_id = ?)
                 ORDER BY r.rent_date DESC
                 LIMIT 1
             """, (query_str, query_str))
@@ -1756,7 +1882,7 @@ class ReturnPage(QWidget):
             
             if condition == "Lost":
                 # 1. Complete the Return Log under a special status condition
-                cursor.execute("INSERT INTO returns (rent_id, return_date, return_condition) VALUES (?, ?, ?)", (rent_id, today_str, "Lost"))
+                cursor.execute("UPDATE RENTAL SET return_date = ?, return_condition = ? WHERE rental_id = ?", (today_str, "Lost", rent_id))
                 
                 # 2. Update umbrella inventory state to reflect it's gone
                 cursor.execute("UPDATE Umbrella SET current_status = 'Maintenance', condition = 'Dysfunctional' WHERE umbrella_id = ?", (umb_id,))
@@ -1795,7 +1921,7 @@ class ReturnPage(QWidget):
                     
             else:
                 # --- STANDARD PROCESS (GOOD / DAMAGED / DYSFUNCTIONAL) ---
-                cursor.execute("INSERT INTO returns (rent_id, return_date, return_condition) VALUES (?, ?, ?)", (rent_id, today_str, condition))
+                cursor.execute("UPDATE RENTAL SET return_date = ?, return_condition = ? WHERE rental_id = ?", (today_str, condition, rent_id))
                 cursor.execute("UPDATE Umbrella SET current_status = 'Available' WHERE umbrella_id = ?", (umb_id,))
                 
                 has_damage = False
@@ -1911,6 +2037,70 @@ class PenaltiesViewCombined(QWidget):
         self.payments_tab.load_payments()
 
 
+class RentalPage(QWidget):
+    """The unified Rental view containing Rent Umbrella and Return Umbrella sub-tabs."""
+    def __init__(self, db_path, main_win, parent=None):
+        super().__init__(parent)
+        self.db_path = db_path
+        self.main_win = main_win
+        
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+        
+        self.sub_tab = QTabWidget()
+        self.sub_tab.setStyleSheet("""
+            QTabWidget::panel {
+                border: none;
+                background-color: #f3f4f6;
+            }
+            QTabBar::tab {
+                background-color: #e5e7eb;
+                color: #4b5563;
+                font-weight: bold;
+                padding: 10px 20px;
+                border-top-left-radius: 8px;
+                border-top-right-radius: 8px;
+                margin-right: 4px;
+                font-family: 'Segoe UI', Arial, sans-serif;
+                font-size: 12px;
+            }
+            QTabBar::tab:selected {
+                background-color: #ffffff;
+                color: #11224d;
+                border-bottom: 2px solid #11224d;
+            }
+            QTabBar::tab:hover {
+                background-color: #f3f4f6;
+            }
+        """)
+        
+        self.rent_tab = RentPage(self.db_path, self.main_win, self)
+        self.return_tab = ReturnPage(self.db_path, self.main_win, self)
+        
+        self.sub_tab.addTab(self.rent_tab, "✋ Rent Umbrella")
+        self.sub_tab.addTab(self.return_tab, "↩ Return Umbrella")
+        
+        # Automatically refresh the tab when switched within this group
+        self.sub_tab.currentChanged.connect(self.on_tab_changed)
+        
+        layout.addWidget(self.sub_tab)
+        
+    def set_active_tab(self, index):
+        self.sub_tab.setCurrentIndex(index)
+        
+    def on_tab_changed(self, index):
+        widget = self.sub_tab.widget(index)
+        if widget and hasattr(widget, "refresh"):
+            widget.refresh()
+            
+    def refresh(self):
+        # Refresh the current active item
+        widget = self.sub_tab.currentWidget()
+        if widget and hasattr(widget, "refresh"):
+            widget.refresh()
+
+
 class RaincheckMainWindow(QMainWindow):
     """The main administrative portal containing the left solid-navy menu and the right page rendering panes."""
     def __init__(self):
@@ -1980,8 +2170,7 @@ class RaincheckMainWindow(QMainWindow):
         
         nav_items = [
             ("⊞  Dashboard", "dashboard"),
-            ("✋  Rent", "rent"),
-            ("↩  Return", "return"),
+            ("🔄  Rental", "rental"),
             ("🌂  Inventory", "inventory"),
             ("👥  Users", "users"),
             ("⚠️  Penalties", "penalties")
@@ -2057,18 +2246,16 @@ class RaincheckMainWindow(QMainWindow):
         
         # Instantiate separate views
         self.dashboard_view = DashboardPage(self)
-        self.rent_view = RentPage(DB_FILE, self)
-        self.return_view = ReturnPage(DB_FILE, self)
+        self.rental_view = RentalPage(DB_FILE, self)
         self.inventory_view = UmbrellasTab(DB_FILE, self)
         self.users_view = UsersTab(DB_FILE, self)
         self.penalties_view = PenaltiesViewCombined(DB_FILE, self)
         
         self.stacked_widget.addWidget(self.dashboard_view) # 0
-        self.stacked_widget.addWidget(self.rent_view)      # 1
-        self.stacked_widget.addWidget(self.return_view)    # 2
-        self.stacked_widget.addWidget(self.inventory_view) # 3
-        self.stacked_widget.addWidget(self.users_view)     # 4
-        self.stacked_widget.addWidget(self.penalties_view) # 5
+        self.stacked_widget.addWidget(self.rental_view)    # 1
+        self.stacked_widget.addWidget(self.inventory_view) # 2
+        self.stacked_widget.addWidget(self.users_view)     # 3
+        self.stacked_widget.addWidget(self.penalties_view) # 4
         
         right_layout.addWidget(self.stacked_widget)
         main_layout.addWidget(right_workspace)
@@ -2085,7 +2272,7 @@ class RaincheckMainWindow(QMainWindow):
             # Let other key presses behave normally
             super().keyPressEvent(event)
        
-    def switch_view(self, index):
+    def switch_view(self, index, sub_index=None):
         self.stacked_widget.setCurrentIndex(index)
         self.nav_buttons[index].setChecked(True)
         
@@ -2093,14 +2280,14 @@ class RaincheckMainWindow(QMainWindow):
         if index == 0:
             self.refresh_stats()
         elif index == 1:
-            self.rent_view.refresh()
+            if sub_index is not None:
+                self.rental_view.set_active_tab(sub_index)
+            self.rental_view.refresh()
         elif index == 2:
-            self.return_view.refresh()
-        elif index == 3:
             self.inventory_view.load_umbrellas()
-        elif index == 4:
+        elif index == 3:
             self.users_view.load_users()
-        elif index == 5:
+        elif index == 4:
             self.penalties_view.refresh()
             
     def refresh_stats(self):
@@ -2119,6 +2306,12 @@ class RaincheckMainWindow(QMainWindow):
         
     def query_stats(self):
         try:
+            try:
+                from data.user import sync_overdue_penalties
+                sync_overdue_penalties(DB_FILE)
+            except Exception as se:
+                print(f"Error syncing overdue penalties in query_stats: {se}")
+
             conn = sqlite3.connect(DB_FILE)
             cursor = conn.cursor()
             
@@ -2128,17 +2321,15 @@ class RaincheckMainWindow(QMainWindow):
             
             # Active Rentals count (Borrow records with no returns registered)
             cursor.execute("""
-                SELECT COUNT(*) FROM rents r 
-                LEFT JOIN returns ret ON r.rent_id = ret.rent_id 
-                WHERE ret.return_id IS NULL
+                SELECT COUNT(*) FROM RENTAL r 
+                WHERE r.return_date IS NULL OR r.return_date = ''
             """)
             active = cursor.fetchone()[0]
             
             # Retrieve active rent due dates for late check-in warning counts
             cursor.execute("""
-                SELECT r.due_date FROM rents r 
-                LEFT JOIN returns ret ON r.rent_id = ret.rent_id 
-                WHERE ret.return_id IS NULL
+                SELECT r.due_date FROM RENTAL r 
+                WHERE r.return_date IS NULL OR r.return_date = ''
             """)
             durations = [row[0] for row in cursor.fetchall()]
             conn.close()

@@ -150,17 +150,16 @@ class UsersTab(QWidget):
 
         # Users Table
         self.table = QTableWidget()
-        self.table.setColumnCount(6)
-        self.table.setHorizontalHeaderLabels(["Student / User ID", "First Name", "Last Name", "M.I.", "Standing", "Actions"])
+        self.table.setColumnCount(7)
+        self.table.setHorizontalHeaderLabels(["Student / User ID", "First Name", "Last Name", "M.I.", "RFID UID", "Standing", "Actions"])
         
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         self.table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.Fixed)
         self.table.setColumnWidth(3, 50)  # M.I.
-        self.table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeMode.Fixed)
-        self.table.setColumnWidth(4, 110)  # Standing
         self.table.horizontalHeader().setSectionResizeMode(5, QHeaderView.ResizeMode.Fixed)
-        self.table.setColumnWidth(5, 150)  # Actions
-        self.table.setMinimumHeight(400)  # Ensure minimum height for better visibility
+        self.table.setColumnWidth(5, 110)  # Standing
+        self.table.horizontalHeader().setSectionResizeMode(6, QHeaderView.ResizeMode.Fixed)
+        self.table.setColumnWidth(6, 150)  # Actions
         
         self.table.setStyleSheet("""
             QTableWidget {
@@ -419,18 +418,17 @@ class UsersTab(QWidget):
                 self.table.insertRow(idx)
                 user_id = row[0]
                 
-                # Base User Fields (Columns 0-3: user_id, first_name, last_name, m_i)
-                for col_idx in range(4):
-                    val = row[col_idx]
+                # Base User Fields (Columns 0-4)
+                for col_idx, val in enumerate(row):
                     item = QTableWidgetItem(str(val) if val else "")
                     item.setFlags(item.flags() ^ Qt.ItemFlag.ItemIsEditable)
-                    if col_idx in [0, 3]:
+                    if col_idx in [0, 3, 4]:
                         item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
                         if col_idx == 0:
                             item.setForeground(QColor("#11224d"))
                     self.table.setItem(idx, col_idx, item)
                 
-                # Column 4: Status/Standing badge mapped to standard values (Overdue/Active/Returned)
+                # Column 5: Status/Standing badge mapped to standard values (Overdue/Active/Returned)
                 user_active = active_rentals.get(user_id, [])
                 has_overdue = any(user_active)
                 has_active = len(user_active) > 0
@@ -455,9 +453,9 @@ class UsersTab(QWidget):
                         background-color: transparent;
                     }}
                 """)
-                self.table.setCellWidget(idx, 4, status_lbl)
+                self.table.setCellWidget(idx, 5, status_lbl)
                 
-                # Column 5: Action buttons (Edit & Delete)
+                # Column 6: Action buttons (Edit & Delete)
                 actions_widget = QWidget()
                 actions_layout = QHBoxLayout(actions_widget)
                 actions_layout.setContentsMargins(6, 2, 6, 2)
@@ -504,7 +502,7 @@ class UsersTab(QWidget):
                 del_btn.clicked.connect(lambda checked, u=user_id: self.delete_user(u))
                 actions_layout.addWidget(del_btn)
                 
-                self.table.setCellWidget(idx, 5, actions_widget)
+                self.table.setCellWidget(idx, 6, actions_widget)
                 
             self.draw_pagination_controls(total_matches)
         except Exception as e:
@@ -638,6 +636,68 @@ class UsersTab(QWidget):
         name_row.addLayout(ln_col, 4)
         name_row.addLayout(mi_col, 2)
         body_layout.addLayout(name_row)
+        
+        # RFID Card Enrollment dashed container
+        rfid_box = QFrame()
+        rfid_box.setStyleSheet("""
+            QFrame {
+                border: 2px dashed #3b82f6;
+                border-radius: 8px;
+                background-color: #f0f7ff;
+            }
+        """)
+        rfid_box_layout = QVBoxLayout(rfid_box)
+        rfid_box_layout.setContentsMargins(14, 12, 14, 12)
+        rfid_box_layout.setSpacing(6)
+        
+        rfid_hdr = QLabel("📊 RFID CARD ENROLLMENT")
+        rfid_hdr.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        rfid_hdr.setStyleSheet("color: #2563eb; font-weight: bold; font-family: 'Segoe UI', sans-serif; font-size: 10px; letter-spacing: 0.5px; border: none; background: transparent;")
+        
+        rfid_body_layout = QHBoxLayout()
+        rfid_body_layout.setSpacing(12)
+        rfid_body_layout.setAlignment(Qt.AlignmentFlag.AlignVCenter)
+        
+        card_icon = QLabel("💳")
+        card_icon.setStyleSheet("font-size: 26px; border: none; background: transparent;")
+        
+        rfid_txt_layout = QVBoxLayout()
+        rfid_txt_layout.setSpacing(2)
+        rfid_txt_layout.setContentsMargins(0, 0, 0, 0)
+        
+        tap_lbl = QLabel("Tap ID card on scanner now")
+        tap_lbl.setStyleSheet("color: #1e40af; font-weight: bold; font-size: 12px; border: none; background: transparent;")
+        
+        hold_lbl = QLabel("Hold card flat against the reader until confirmed")
+        hold_lbl.setStyleSheet("color: #3b82f6; font-size: 11px; border: none; background: transparent;")
+        
+        rfid_txt_layout.addWidget(tap_lbl)
+        rfid_txt_layout.addWidget(hold_lbl)
+        
+        # Real-time writing or reading input
+        rfid_input = QLineEdit(rfid_uid)
+        rfid_input.setPlaceholderText("Or enter RFID UID manually...")
+        rfid_input.setStyleSheet("""
+            QLineEdit {
+                border: 1px solid #bfdbfe;
+                border-radius: 6px;
+                padding: 4px 8px;
+                font-size: 11px;
+                color: #1e40af;
+                background-color: #ffffff;
+            }
+            QLineEdit:focus {
+                border: 1.5px solid #2563eb;
+            }
+        """)
+        rfid_txt_layout.addWidget(rfid_input)
+        
+        rfid_body_layout.addWidget(card_icon)
+        rfid_body_layout.addLayout(rfid_txt_layout)
+        
+        rfid_box_layout.addWidget(rfid_hdr)
+        rfid_box_layout.addLayout(rfid_body_layout)
+        body_layout.addWidget(rfid_box)
         
         from PyQt6.QtGui import QRegularExpressionValidator
         from PyQt6.QtCore import QRegularExpression
@@ -960,6 +1020,68 @@ class UsersTab(QWidget):
         name_row.addLayout(ln_col, 4)
         name_row.addLayout(mi_col, 2)
         body_layout.addLayout(name_row)
+        
+        # RFID Card Enrollment dashed card
+        rfid_box = QFrame()
+        rfid_box.setStyleSheet("""
+            QFrame {
+                border: 2px dashed #3b82f6;
+                border-radius: 8px;
+                background-color: #f0f7ff;
+            }
+        """)
+        rfid_box_layout = QVBoxLayout(rfid_box)
+        rfid_box_layout.setContentsMargins(14, 12, 14, 12)
+        rfid_box_layout.setSpacing(6)
+        
+        rfid_hdr = QLabel("📊 RFID CARD ENROLLMENT")
+        rfid_hdr.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        rfid_hdr.setStyleSheet("color: #2563eb; font-weight: bold; font-family: 'Segoe UI', sans-serif; font-size: 10px; letter-spacing: 0.5px; border: none; background: transparent;")
+        
+        rfid_body_layout = QHBoxLayout()
+        rfid_body_layout.setSpacing(12)
+        rfid_body_layout.setAlignment(Qt.AlignmentFlag.AlignVCenter)
+        
+        card_icon = QLabel("💳")
+        card_icon.setStyleSheet("font-size: 26px; border: none; background: transparent;")
+        
+        rfid_txt_layout = QVBoxLayout()
+        rfid_txt_layout.setSpacing(2)
+        rfid_txt_layout.setContentsMargins(0, 0, 0, 0)
+        
+        tap_lbl = QLabel("Tap ID card on scanner now")
+        tap_lbl.setStyleSheet("color: #1e40af; font-weight: bold; font-size: 12px; border: none; background: transparent;")
+        
+        hold_lbl = QLabel("Hold card flat against the reader until confirmed")
+        hold_lbl.setStyleSheet("color: #3b82f6; font-size: 11px; border: none; background: transparent;")
+        
+        rfid_txt_layout.addWidget(tap_lbl)
+        rfid_txt_layout.addWidget(hold_lbl)
+        
+        # Let the RFID scanner write into field beautifully
+        rfid_input = QLineEdit()
+        rfid_input.setPlaceholderText("Or enter RFID UID manually...")
+        rfid_input.setStyleSheet("""
+            QLineEdit {
+                border: 1px solid #bfdbfe;
+                border-radius: 6px;
+                padding: 4px 8px;
+                font-size: 11px;
+                color: #1e40af;
+                background-color: #ffffff;
+            }
+            QLineEdit:focus {
+                border: 1.5px solid #2563eb;
+            }
+        """)
+        rfid_txt_layout.addWidget(rfid_input)
+        
+        rfid_body_layout.addWidget(card_icon)
+        rfid_body_layout.addLayout(rfid_txt_layout)
+        
+        rfid_box_layout.addWidget(rfid_hdr)
+        rfid_box_layout.addLayout(rfid_body_layout)
+        body_layout.addWidget(rfid_box)
         
         from PyQt6.QtGui import QRegularExpressionValidator
         from PyQt6.QtCore import QRegularExpression

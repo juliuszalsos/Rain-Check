@@ -12,6 +12,58 @@ try:
 except ImportError:
     from success_dialogs import PaymentSuccessDialog
 
+def sync_overdue_penalties(db_path):
+    import sqlite3
+    from datetime import datetime
+    try:
+        conn = sqlite3.connect(db_path)
+        cursor = conn.cursor()
+        
+        # Correctly query active rentals using RENTAL table
+        cursor.execute("""
+            SELECT r.rental_id, r.user_id, r.due_date 
+            FROM RENTAL r
+            WHERE r.return_date IS NULL OR r.return_date = ''
+        """)
+        active_rentals = cursor.fetchall()
+        
+        now = datetime.now()
+        
+        for rent_id, user_id, due_date_str in active_rentals:
+            try:
+                parts = due_date_str.split(" ")
+                dt_parts = parts[0].split("-")
+                tm_parts = parts[1].split(":")
+                val_ampm = parts[2]
+                due_hr = int(tm_parts[0])
+                if val_ampm == "PM" and due_hr < 12:
+                    due_hr += 12
+                if val_ampm == "AM" and due_hr == 12:
+                    due_hr = 0
+                due_datetime = datetime(int(dt_parts[0]), int(dt_parts[1]), int(dt_parts[2]), due_hr, int(tm_parts[1]))
+            except Exception:
+                continue
+                
+            if now > due_datetime:
+                penalty_id = f"LATE-{rent_id}"
+                cursor.execute("SELECT COUNT(*) FROM penalty WHERE penalty_id = ?", (penalty_id,))
+                if cursor.fetchone()[0] == 0:
+                    ampm = "PM" if now.hour >= 12 else "AM"
+                    hours = now.hour % 12
+                    if hours == 0:
+                        hours = 12
+                    today_str = f"{now.year}-{now.month:02d}-{now.day:02d} {hours:02d}:{now.minute:02d} {ampm}"
+                    
+                    cursor.execute("""
+                        INSERT INTO penalty (penalty_id, user_id, penalty_reason, date_issued, amount, paid_status)
+                        VALUES (?, ?, 'Late Return Overdue Fee', ?, 15.00, 'Unpaid')
+                    """, (penalty_id, user_id, today_str))
+                    
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        print(f"Error in sync_overdue_penalties: {e}")
+
 class MiniStatCard(QFrame):
     """Mini stat card for penalty metrics with specialized background/borders."""
     def __init__(self, border_color, value, label, text_color, parent=None):
@@ -281,10 +333,12 @@ class PenaltiesTab(QWidget):
         layout.addWidget(main_card)
         
         # Seed dynamic loads
+        self.setup_autocomplete()
         self.load_penalties()
 
     def update_metrics(self):
         """Fetch and render total aggregate KPIs dynamically."""
+        sync_overdue_penalties(self.db_path)
         try:
             conn = sqlite3.connect(self.db_path)
             cursor = conn.cursor()
@@ -396,8 +450,54 @@ class PenaltiesTab(QWidget):
         except Exception as e:
             QMessageBox.critical(self, "Retrieval Error", f"Failed to retrieve penalties: {e}")
 
+    def setup_autocomplete(self):
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT penalty.penalty_id, penalty.user_id, USER.first_name, USER.last_name, penalty.penalty_reason
+                FROM penalty
+                LEFT JOIN USER ON penalty.user_id = USER.user_id
+            """)
+            rows = cursor.fetchall()
+            conn.close()
+            
+            suggestions = []
+            for pid, uid, fn, ln, reason in rows:
+                fn_str = fn if fn else ""
+                ln_str = ln if ln else ""
+                full_name = f"{fn_str} {ln_str}".strip()
+                name_clause = f" ({full_name})" if full_name else ""
+                suggestions.append(f"Ticket: {pid} - User: {uid}{name_clause} - Reason: {reason}")
+                
+            from PyQt6.QtWidgets import QCompleter
+            completer = QCompleter(suggestions, self)
+            completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
+            completer.setFilterMode(Qt.MatchFlag.MatchContains)
+            completer.setMaxVisibleItems(10)
+            
+            completer.activated.connect(self.on_completer_activated)
+            self.search_input.setCompleter(completer)
+        except Exception as e:
+            print(f"Error setting up penalty autocomplete: {e}")
+
+    def on_completer_activated(self, text):
+        import re
+        match = re.search(r"Ticket:\s*(\w+)", text, re.IGNORECASE)
+        if match:
+            ticket_id = match.group(1)
+            self.search_input.setText(ticket_id)
+            self.on_search_changed(ticket_id)
+
     def on_search_changed(self, text):
-        self.search_text = text.strip()
+        import re
+        txt_to_parse = str(text) if text is not None else ""
+        match = re.search(r"Ticket:\s*(\w+)", txt_to_parse, re.IGNORECASE)
+        if match:
+            self.search_text = match.group(1)
+            self.search_input.setText(self.search_text)
+        else:
+            self.search_text = txt_to_parse.strip()
         self.load_penalties()
 
     def switch_segment(self, filter_type):

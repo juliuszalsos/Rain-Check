@@ -5,6 +5,7 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import Qt, QSize
 from PyQt6.QtGui import QColor, QFont, QCursor
+from data.success_dialogs import CustomDeleteConfirmationDialog, CustomCannotDeleteWarningDialog
 
 def add_subtle_shadow(widget):
     import PyQt6.QtWidgets as QW
@@ -243,10 +244,49 @@ class UmbrellasTab(QWidget):
         add_subtle_shadow(main_card)
         layout.addWidget(main_card)
         
+        self.setup_autocomplete()
         self.load_umbrellas()
 
+    def setup_autocomplete(self):
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            cursor.execute("SELECT umbrella_id, current_status, condition FROM Umbrella")
+            rows = cursor.fetchall()
+            conn.close()
+            
+            suggestions = []
+            for umb_id, status, cond in rows:
+                suggestions.append(f"{umb_id} - {status} ({cond})")
+                
+            from PyQt6.QtWidgets import QCompleter
+            completer = QCompleter(suggestions, self)
+            completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
+            completer.setFilterMode(Qt.MatchFlag.MatchContains)
+            completer.setMaxVisibleItems(10)
+            
+            completer.activated.connect(self.on_completer_activated)
+            self.search_input.setCompleter(completer)
+        except Exception as e:
+            print(f"Error setting up umbrella autocomplete: {e}")
+
+    def on_completer_activated(self, text):
+        import re
+        match = re.search(r"U-\d+", text, re.IGNORECASE)
+        if match:
+            umb_id = match.group(0).upper()
+            self.search_input.setText(umb_id)
+            self.search_changed(umb_id)
+
     def search_changed(self, text):
-        self.search_text = text.strip()
+        import re
+        txt_to_parse = str(text) if text is not None else ""
+        match = re.search(r"U-\d+", txt_to_parse, re.IGNORECASE)
+        if match:
+            self.search_text = match.group(0).upper()
+            self.search_input.setText(self.search_text)
+        else:
+            self.search_text = txt_to_parse.strip()
         self.current_page = 0
         self.load_umbrellas()
 
@@ -433,7 +473,7 @@ class UmbrellasTab(QWidget):
             cursor = conn.cursor()
             cursor.execute("""
                 SELECT u.first_name || ' ' || u.last_name 
-                FROM rents r 
+                FROM RENTAL r 
                 JOIN USER u ON r.user_id = u.user_id 
                 WHERE r.umbrella_id = ? 
                 ORDER BY r.rent_date DESC 
@@ -446,8 +486,10 @@ class UmbrellasTab(QWidget):
             return "-"
 
     def draw_pagination_controls(self, total_matches):
-        for i in reversed(range(self.pages_layout.count())): 
-            self.pages_layout.itemAt(i).widget().setParent(None)
+        while self.pages_layout.count():
+            item = self.pages_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
             
         import math
         total_pages = math.ceil(total_matches / self.page_size)
@@ -483,24 +525,74 @@ class UmbrellasTab(QWidget):
                         background-color: #f3f4f6;
                     }
                 """)
-            btn.clicked.connect(lambda: self.switch_page(target_page))
+            btn.clicked.connect(lambda checked, t=target_page: self.switch_page(t))
             return btn
 
+        # Left arrow
         prev_page = max(0, self.current_page - 1)
-        self.pages_layout.addWidget(create_page_btn("<", prev_page))
+        prev_btn = create_page_btn("<", prev_page)
+        prev_btn.setEnabled(self.current_page > 0)
+        if self.current_page == 0:
+            prev_btn.setStyleSheet("""
+                QPushButton {
+                    background-color: transparent;
+                    color: #d1d5db;
+                    border: 1px solid #d1d5db;
+                    border-radius: 4px;
+                    font-size: 10px;
+                }
+            """)
+        self.pages_layout.addWidget(prev_btn)
         
-        max_visible = 3
-        for i in range(total_pages):
-            if i < max_visible or i == total_pages - 1:
-                self.pages_layout.addWidget(create_page_btn(str(i+1), i, active=(i == self.current_page)))
-            elif i == max_visible:
-                dots = QLabel("...")
-                dots.setAlignment(Qt.AlignmentFlag.AlignCenter)
-                dots.setStyleSheet("color: #6b7280; font-size: 11px;")
-                self.pages_layout.addWidget(dots)
+        # Sliding window calculation
+        pages_to_show = []
+        if total_pages <= 7:
+            pages_to_show = list(range(total_pages))
+        else:
+            middle_start = max(1, self.current_page - 1)
+            middle_end = min(total_pages - 2, self.current_page + 1)
+            
+            if self.current_page <= 2:
+                middle_start = 1
+                middle_end = 3
+            elif self.current_page >= total_pages - 3:
+                middle_start = total_pages - 4
+                middle_end = total_pages - 2
                 
+            pages_to_show.append(0)
+            if middle_start > 1:
+                pages_to_show.append("...")
+            for i in range(middle_start, middle_end + 1):
+                pages_to_show.append(i)
+            if middle_end < total_pages - 2:
+                pages_to_show.append("...")
+            pages_to_show.append(total_pages - 1)
+            
+        for item in pages_to_show:
+            if item == "...":
+                dots = QLabel("...")
+                dots.setStyleSheet("color: #6b7280; font-size: 11px;")
+                dots.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                dots.setFixedSize(28, 28)
+                self.pages_layout.addWidget(dots)
+            else:
+                self.pages_layout.addWidget(create_page_btn(str(item + 1), item, active=(item == self.current_page)))
+                
+        # Right arrow
         next_page = min(total_pages - 1, self.current_page + 1)
-        self.pages_layout.addWidget(create_page_btn(">", next_page))
+        next_btn = create_page_btn(">", next_page)
+        next_btn.setEnabled(self.current_page < total_pages - 1)
+        if self.current_page == total_pages - 1:
+            next_btn.setStyleSheet("""
+                QPushButton {
+                    background-color: transparent;
+                    color: #d1d5db;
+                    border: 1px solid #d1d5db;
+                    border-radius: 4px;
+                    font-size: 10px;
+                }
+            """)
+        self.pages_layout.addWidget(next_btn)
 
     def switch_page(self, page):
         self.current_page = page
@@ -532,24 +624,28 @@ class UmbrellasTab(QWidget):
             
             if res and res[0].upper() == "RENTED":
                 conn.close()
-                QMessageBox.warning(
-                    self, "Cannot Delete", 
-                    "Cannot be deleted, currently being rented. Settle renting status before deleting."
+                warning_dialog = CustomCannotDeleteWarningDialog(
+                    "Cannot delete umbrella",
+                    umb_id,
+                    "Umbrella ID {} cannot be deleted because it is currently rented out.",
+                    sub_text="Please settle the active rental in the Return Tab before deleting this item.",
+                    parent=self
                 )
+                warning_dialog.exec()
                 return
             conn.close()
         except Exception as e:
             QMessageBox.critical(self, "Database Error", f"Failed to check umbrella status: {e}")
             return
 
-        confirm = QMessageBox.question(
-            self, "Confirm Deletion",
-            f"Are you sure you want to permanently delete Umbrella ID {umb_id} from the inventory?",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.No
+        confirm_dialog = CustomDeleteConfirmationDialog(
+            "Delete umbrella",
+            umb_id,
+            "Are you sure you want to permanently delete Umbrella ID {} ?<br>This action cannot be undone.",
+            parent=self
         )
         
-        if confirm == QMessageBox.StandardButton.Yes:
+        if confirm_dialog.exec() == QDialog.DialogCode.Accepted:
             try:
                 conn = sqlite3.connect(self.db_path)
                 cursor = conn.cursor()

@@ -297,3 +297,278 @@ class ReturnPenaltySuccessDialog(CustomSuccessDialogBase):
         self.layout.addWidget(ref_card)
         
         self.add_ok_button()
+
+
+class CustomDeleteConfirmationDialog(QDialog):
+    """Custom high-fidelity confirmation dialog matching the Red Warning mockup."""
+    def __init__(self, title, name_or_id, description_template, parent=None):
+        super().__init__(parent)
+        self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.Dialog)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        self.setFixedWidth(520)
+        
+        # Outer layout for shadowing
+        outer_layout = QVBoxLayout(self)
+        outer_layout.setContentsMargins(10, 10, 10, 10)
+        
+        frame = QFrame()
+        frame.setStyleSheet("""
+            QFrame {
+                background-color: #ffffff;
+                border: 1px solid #fecaca;
+                border-top: 4px solid #ef4444;
+                border-radius: 12px;
+            }
+        """)
+        
+        shadow = QGraphicsDropShadowEffect()
+        shadow.setBlurRadius(15)
+        shadow.setXOffset(0)
+        shadow.setYOffset(4)
+        shadow.setColor(QColor(17, 24, 39, 20))
+        frame.setGraphicsEffect(shadow)
+        
+        layout = QVBoxLayout(frame)
+        layout.setContentsMargins(24, 24, 24, 24)
+        layout.setSpacing(16)
+        
+        # Header Row: Icon + Title
+        header_layout = QHBoxLayout()
+        header_layout.setSpacing(12)
+        header_layout.setAlignment(Qt.AlignmentFlag.AlignVCenter)
+        
+        # Icon box
+        icon_box = QFrame()
+        icon_box.setFixedSize(40, 40)
+        icon_box.setStyleSheet("""
+            QFrame {
+                background-color: #fee2e2;
+                border-radius: 8px;
+                border: none;
+            }
+        """)
+        icon_layout = QVBoxLayout(icon_box)
+        icon_layout.setContentsMargins(0, 0, 0, 0)
+        icon_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        
+        icon_lbl = QLabel("🗑️")
+        icon_lbl.setStyleSheet("font-size: 18px; background: transparent; border: none;")
+        icon_layout.addWidget(icon_lbl)
+        
+        title_lbl = QLabel(title)
+        title_lbl.setStyleSheet("""
+            QLabel {
+                font-size: 16px;
+                font-weight: bold;
+                color: #111827;
+                font-family: 'Segoe UI', system-ui, sans-serif;
+                border: none;
+                background: transparent;
+            }
+        """)
+        
+        header_layout.addWidget(icon_box)
+        header_layout.addWidget(title_lbl)
+        header_layout.addStretch()
+        layout.addLayout(header_layout)
+        
+        # Content Row
+        content_lbl = QLabel()
+        content_lbl.setWordWrap(True)
+        content_lbl.setTextFormat(Qt.TextFormat.RichText)
+        
+        # Embed badge HTML
+        badge_html = f"<span style='background-color: #fee2e2; color: #b91c1c; font-family: monospace; font-weight: bold; padding: 2px 6px; border-radius: 4px;'>{name_or_id}</span>"
+        body_text = description_template.replace("{}", badge_html)
+        
+        content_lbl.setText(body_text)
+        content_lbl.setStyleSheet("""
+            QLabel {
+                font-size: 13px;
+                color: #4b5563;
+                font-family: 'Segoe UI', system-ui, sans-serif;
+                line-height: 1.5;
+                border: none;
+                background: transparent;
+            }
+        """)
+        layout.addWidget(content_lbl)
+        
+        # Buttons Row
+        btn_layout = QHBoxLayout()
+        btn_layout.addStretch()
+        
+        cancel_btn = QPushButton("Cancel")
+        cancel_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        cancel_btn.setFixedSize(85, 32)
+        cancel_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #ffffff;
+                color: #415163;
+                border: 1px solid #cbd5e1;
+                border-radius: 6px;
+                font-size: 12px;
+                font-weight: bold;
+                font-family: 'Segoe UI', system-ui, sans-serif;
+            }
+            QPushButton:hover {
+                background-color: #f8fafc;
+            }
+        """)
+        cancel_btn.clicked.connect(self.reject)
+        
+        delete_btn = QPushButton("DELETE")
+        delete_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        delete_btn.setFixedSize(85, 32)
+        delete_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #ef4444;
+                color: #ffffff;
+                border: none;
+                border-radius: 6px;
+                font-size: 12px;
+                font-weight: bold;
+                font-family: 'Segoe UI', system-ui, sans-serif;
+            }
+            QPushButton:hover {
+                background-color: #dc2626;
+            }
+        """)
+        delete_btn.clicked.connect(self.accept)
+        
+        btn_layout.addWidget(cancel_btn)
+        btn_layout.addWidget(delete_btn)
+        layout.addLayout(btn_layout)
+        
+        outer_layout.addWidget(frame)
+
+
+class CustomCannotDeleteWarningDialog(QDialog):
+    """Custom high-fidelity blocked warning matching the Amber Warning mockup."""
+    def __init__(self, title, name_or_id, main_reason, sub_text=None, parent=None):
+        super().__init__(parent)
+        self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.Dialog)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        self.setFixedWidth(520)
+        
+        outer_layout = QVBoxLayout(self)
+        outer_layout.setContentsMargins(10, 10, 10, 10)
+        
+        frame = QFrame()
+        frame.setStyleSheet("""
+            QFrame {
+                background-color: #ffffff;
+                border: 1px solid #fef3c7;
+                border-top: 4px solid #f59e0b;
+                border-radius: 12px;
+            }
+        """)
+        
+        shadow = QGraphicsDropShadowEffect()
+        shadow.setBlurRadius(15)
+        shadow.setXOffset(0)
+        shadow.setYOffset(4)
+        shadow.setColor(QColor(17, 24, 39, 20))
+        frame.setGraphicsEffect(shadow)
+        
+        layout = QVBoxLayout(frame)
+        layout.setContentsMargins(24, 24, 24, 24)
+        layout.setSpacing(16)
+        
+        # Header Row: Icon + Title
+        header_layout = QHBoxLayout()
+        header_layout.setSpacing(12)
+        header_layout.setAlignment(Qt.AlignmentFlag.AlignVCenter)
+        
+        icon_box = QFrame()
+        icon_box.setFixedSize(40, 40)
+        icon_box.setStyleSheet("""
+            QFrame {
+                background-color: #fef3c7;
+                border-radius: 20px;
+                border: none;
+            }
+        """)
+        icon_layout = QVBoxLayout(icon_box)
+        icon_layout.setContentsMargins(0, 0, 0, 0)
+        icon_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        
+        icon_lbl = QLabel("ⓘ")
+        icon_lbl.setStyleSheet("""
+            QLabel {
+                font-size: 22px; 
+                color: #d97706; 
+                font-weight: bold; 
+                background: transparent; 
+                border: none;
+            }
+        """)
+        icon_layout.addWidget(icon_lbl)
+        
+        title_lbl = QLabel(title)
+        title_lbl.setStyleSheet("""
+            QLabel {
+                font-size: 16px;
+                font-weight: bold;
+                color: #111827;
+                font-family: 'Segoe UI', system-ui, sans-serif;
+                border: none;
+                background: transparent;
+            }
+        """)
+        
+        header_layout.addWidget(icon_box)
+        header_layout.addWidget(title_lbl)
+        header_layout.addStretch()
+        layout.addLayout(header_layout)
+        
+        # Content Row
+        content_lbl = QLabel()
+        content_lbl.setWordWrap(True)
+        content_lbl.setTextFormat(Qt.TextFormat.RichText)
+        
+        badge_html = f"<span style='background-color: #fef3c7; color: #b45309; font-family: monospace; font-weight: bold; padding: 2px 6px; border-radius: 4px;'>{name_or_id}</span>"
+        body_text = f"{main_reason.replace('{}', badge_html)}"
+        if sub_text:
+            body_text += f"<br><span style='color: #7c2d12; font-weight: bold;'>{sub_text}</span>"
+            
+        content_lbl.setText(body_text)
+        content_lbl.setStyleSheet("""
+            QLabel {
+                font-size: 13px;
+                color: #4b5563;
+                font-family: 'Segoe UI', system-ui, sans-serif;
+                line-height: 1.5;
+                border: none;
+                background: transparent;
+            }
+        """)
+        layout.addWidget(content_lbl)
+        
+        # Buttons Row
+        btn_layout = QHBoxLayout()
+        btn_layout.addStretch()
+        
+        ok_btn = QPushButton("OK")
+        ok_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        ok_btn.setFixedSize(70, 32)
+        ok_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #ffffff;
+                color: #11224d;
+                border: 1px solid #11224d;
+                border-radius: 6px;
+                font-size: 12px;
+                font-weight: bold;
+                font-family: 'Segoe UI', system-ui, sans-serif;
+            }
+            QPushButton:hover {
+                background-color: #f1f5f9;
+            }
+        """)
+        ok_btn.clicked.connect(self.accept)
+        btn_layout.addWidget(ok_btn)
+        layout.addLayout(btn_layout)
+        
+        outer_layout.addWidget(frame)
+
