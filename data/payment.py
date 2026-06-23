@@ -111,4 +111,3 @@ class PaymentsTab(QWidget):
                     self.table.setItem(idx, col_idx, item)
         except Exception as e:
             QMessageBox.critical(self, "Database Error", f"Failed to retrieve ledger payments history: {e}")
-

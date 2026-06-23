@@ -571,4 +571,3 @@ class CustomCannotDeleteWarningDialog(QDialog):
         layout.addLayout(btn_layout)
         
         outer_layout.addWidget(frame)
-

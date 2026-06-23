@@ -127,12 +127,13 @@ def init_database():
             FOREIGN KEY(penalty_id) REFERENCES penalty(penalty_id)
         )
     """)
-    
+
+    # Seed 50 randomized student records first
     cursor.execute("SELECT COUNT(*) FROM USER")
     if cursor.fetchone()[0] == 0:
         first_names = [
             "John", "Mark", "Angelo", "Christian", "Joseph", "Joshua", "Miguel", 
-            "Gabriel", "James", "Patrick", "Francis", "Dave", "Kyle", "Michael", 
+"Gabriel", "James", "Patrick", "Francis", "Dave", "Kyle", "Michael", 
 "Mary", "Joy", "Maria", "Theresa", "Princess", "Sarah", "Nicole", 
 "Anne", "Christine", "Samantha", "Mae", "Hannah", "Grace", "Patricia", 
 "Marie", "Alyssa", "Ashley", "Jerome", "Renz", "Neil", "Bryan", 
@@ -183,11 +184,12 @@ def init_database():
             )
         conn.commit()
 
-    # Seed 60 total Umbrellas (U-001 total to U-060)
+    # Seed 200 total Umbrellas (U-001 total to U-200)
     cursor.execute("SELECT COUNT(*) FROM Umbrella")
     if cursor.fetchone()[0] == 0:
         for i in range(1, 201):
             umb_id = f"U-{i:03d}"
+            # Let's seed 30 Rented (U-001 - U-030), 15 Maintenance (U-031 - U-045), 156 Available (U-046 - U-201)
             if i <= 30:
                 status = "Rented"
                 condition = "Good"
@@ -217,8 +219,8 @@ def init_database():
             user_id = users[idx % len(users)]
             rent_id = f"{now.strftime('%m%d%y')}-{idx+1:03d}"
             
-            # Exactly first 5 overdue
-            is_overdue = (idx < 5)
+            # Exactly first 3 overdue
+            is_overdue = (idx < 3)
             if is_overdue:
                 rent_dt = now - timedelta(days=12)
                 due_dt = now - timedelta(days=5)
