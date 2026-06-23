@@ -1,11 +1,13 @@
 import sqlite3
 import re
+from datetime import datetime
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, 
     QPushButton, QTableWidget, QTableWidgetItem, QHeaderView, QMessageBox, QFrame, QDialog
 )
 from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QColor, QFont, QCursor
+from PyQt6.QtGui import QColor, QFont
+from data.success_dialogs import CustomDeleteConfirmationDialog, CustomCannotDeleteWarningDialog
 
 def add_subtle_shadow(widget):
     import PyQt6.QtWidgets as QW
@@ -16,16 +18,65 @@ def add_subtle_shadow(widget):
     shadow.setColor(QColor(17, 24, 39, 15))
     widget.setGraphicsEffect(shadow)
 
+def sync_overdue_penalties(db_path):
+    import sqlite3
+    from datetime import datetime
+    try:
+        conn = sqlite3.connect(db_path)
+        cursor = conn.cursor()
+        
+        # Correctly query active rentals using RENTAL table
+        cursor.execute("""
+            SELECT r.rental_id, r.user_id, r.due_date 
+            FROM RENTAL r
+            WHERE r.return_date IS NULL OR r.return_date = ''
+        """)
+        active_rentals = cursor.fetchall()
+        
+        now = datetime.now()
+        
+        for rent_id, user_id, due_date_str in active_rentals:
+            try:
+                parts = due_date_str.split(" ")
+                dt_parts = parts[0].split("-")
+                tm_parts = parts[1].split(":")
+                val_ampm = parts[2]
+                due_hr = int(tm_parts[0])
+                if val_ampm == "PM" and due_hr < 12:
+                    due_hr += 12
+                if val_ampm == "AM" and due_hr == 12:
+                    due_hr = 0
+                due_datetime = datetime(int(dt_parts[0]), int(dt_parts[1]), int(dt_parts[2]), due_hr, int(tm_parts[1]))
+            except Exception:
+                continue
+                
+            if now > due_datetime:
+                penalty_id = f"LATE-{rent_id}"
+                cursor.execute("SELECT COUNT(*) FROM penalty WHERE penalty_id = ?", (penalty_id,))
+                if cursor.fetchone()[0] == 0:
+                    ampm = "PM" if now.hour >= 12 else "AM"
+                    hours = now.hour % 12
+                    if hours == 0:
+                        hours = 12
+                    today_str = f"{now.year}-{now.month:02d}-{now.day:02d} {hours:02d}:{now.minute:02d} {ampm}"
+                    
+                    cursor.execute("""
+                        INSERT INTO penalty (penalty_id, user_id, penalty_reason, date_issued, amount, paid_status)
+                        VALUES (?, ?, 'Late Return Overdue Fee', ?, 15.00, 'Unpaid')
+                    """, (penalty_id, user_id, today_str))
+                    
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        print(f"Error in sync_overdue_penalties: {e}")
+
 class UsersTab(QWidget):
     """Clean widget grouping student user registries with a quick search filters panel."""
     def __init__(self, db_path, parent=None):
         super().__init__(parent)
         self.db_path = db_path
-        
-        # --- PAGINATION PROPERTIES ---
-        self.current_page = 1
-        self.items_per_page = 100
-        
+        self.current_page = 0
+        self.page_size = 8
         self.init_ui()
 
     def init_ui(self):
@@ -55,7 +106,7 @@ class UsersTab(QWidget):
 
         # Search Bar
         self.search_input = QLineEdit()
-        self.search_input.setPlaceholderText("Search student ID, name or RFID...")
+        self.search_input.setPlaceholderText("🔍 Search student by ID, Name or RFID...")
         self.search_input.setStyleSheet("""
             QLineEdit {
                 background-color: #ffffff;
@@ -64,54 +115,52 @@ class UsersTab(QWidget):
                 border-radius: 6px;
                 padding: 8px 12px;
                 font-size: 12px;
-                min-width: 250px;
             }
             QLineEdit:focus {
                 border: 1px solid #11224d;
             }
         """)
-        # Reset to page 1 whenever search filters alter
-        self.search_input.textChanged.connect(self.reset_and_load)
+        self.search_input.textChanged.connect(self.search_changed)
+        ctl_layout.addWidget(self.search_input)
+        
+        ctl_layout.addStretch()
 
-        # Add Student Button
-        self.add_btn = QPushButton("Register New Student")
+        # Add Student Button Layout Link
+        self.add_btn = QPushButton("+ Register Student")
+        self.add_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.add_btn.setStyleSheet("""
             QPushButton {
                 background-color: #11224d;
                 color: #ffffff;
                 border: none;
-                padding: 8px 18px;
+                padding: 8px 16px;
                 font-weight: bold;
                 border-radius: 6px;
                 font-size: 12px;
             }
             QPushButton:hover {
-                background-color: #1a3066;
+                background-color: #1c356e;
             }
         """)
         self.add_btn.clicked.connect(self.add_student)
-
-        ctl_layout.addWidget(self.search_input)
-        ctl_layout.addStretch()
         ctl_layout.addWidget(self.add_btn)
+
         add_subtle_shadow(control_card)
         layout.addWidget(control_card)
-
-        # Table title
-        table_lbl = QLabel("STUDENT & STAFF REGISTRIES")
-        table_lbl.setStyleSheet("color: #111827; font-weight: bold; font-size: 11px; letter-spacing: 0.5px; margin-top: 5px;")
-        layout.addWidget(table_lbl)
 
         # Users Table
         self.table = QTableWidget()
         self.table.setColumnCount(6)
-        self.table.setHorizontalHeaderLabels(["Student / User ID", "First Name", "Last Name", "M.I.", "RFID UID", "Actions"])
+        self.table.setHorizontalHeaderLabels(["Student / User ID", "First Name", "Last Name", "M.I.", "Standing", "Actions"])
         
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         self.table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.Fixed)
-        self.table.setColumnWidth(3, 50)  # Shrunk M.I.
+        self.table.setColumnWidth(3, 50)  # M.I.
+        self.table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeMode.Fixed)
+        self.table.setColumnWidth(4, 110)  # Standing
         self.table.horizontalHeader().setSectionResizeMode(5, QHeaderView.ResizeMode.Fixed)
-        self.table.setColumnWidth(5, 140) # Extra action width
+        self.table.setColumnWidth(5, 150)  # Actions
+        self.table.setMinimumHeight(400)  # Ensure minimum height for better visibility
         
         self.table.setStyleSheet("""
             QTableWidget {
@@ -133,169 +182,308 @@ class UsersTab(QWidget):
         """)
         layout.addWidget(self.table)
 
-        # --- PAGINATION FOOTER BUTTONS CONTROLS PANEL ---
-        pagination_card = QFrame()
-        pagination_card.setStyleSheet("""
-            QFrame {
-                background-color: #ffffff;
-                border: 1px solid #e5e7eb;
-                border-radius: 8px;
-            }
-        """)
-        pagination_layout = QHBoxLayout(pagination_card)
-        pagination_layout.setContentsMargins(12, 6, 12, 6)
-        
-        self.prev_btn = QPushButton("◀ Previous")
-        self.prev_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.prev_btn.setStyleSheet("""
-            QPushButton {
-                background-color: #ffffff;
-                color: #374151;
-                border: 1px solid #d1d5db;
-                border-radius: 6px;
-                padding: 5px 12px;
-                font-size: 11px;
-                font-weight: bold;
-            }
-            QPushButton:hover { background-color: #f9fafb; }
-            QPushButton:disabled { color: #9ca3af; background-color: #f3f4f6; border-color: #e5e7eb; }
-        """)
-        self.prev_btn.clicked.connect(self.prev_page)
-        
-        self.page_lbl = QLabel("Page 1 of 1")
-        self.page_lbl.setStyleSheet("color: #4b5563; font-size: 11px; font-weight: bold;")
-        self.page_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        
-        self.next_btn = QPushButton("Next ▶")
-        self.next_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.next_btn.setStyleSheet("""
-            QPushButton {
-                background-color: #ffffff;
-                color: #374151;
-                border: 1px solid #d1d5db;
-                border-radius: 6px;
-                padding: 5px 12px;
-                font-size: 11px;
-                font-weight: bold;
-            }
-            QPushButton:hover { background-color: #f9fafb; }
-            QPushButton:disabled { color: #9ca3af; background-color: #f3f4f6; border-color: #e5e7eb; }
-        """)
-        self.next_btn.clicked.connect(self.next_page)
-        
-        pagination_layout.addWidget(self.prev_btn)
+        # Pagination Bar Card
+        pagination_layout = QHBoxLayout()
+        pagination_layout.setContentsMargins(5, 5, 5, 5)
+        self.stats_lbl = QLabel()
+        self.stats_lbl.setStyleSheet("color: #4b5563; font-size: 11px; font-weight: bold;")
+        pagination_layout.addWidget(self.stats_lbl)
         pagination_layout.addStretch()
-        pagination_layout.addWidget(self.page_lbl)
-        pagination_layout.addStretch()
-        pagination_layout.addWidget(self.next_btn)
         
-        layout.addWidget(pagination_card)
+        self.pages_layout = QHBoxLayout()
+        self.pages_layout.setSpacing(4)
+        pagination_layout.addLayout(self.pages_layout)
+        
+        layout.addLayout(pagination_layout)
+
+        self.setup_autocomplete()
         self.load_users()
 
-    def reset_and_load(self):
-        self.current_page = 1
+    def setup_autocomplete(self):
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            cursor.execute("SELECT user_id, first_name, last_name, m_i, rfid_uid FROM USER")
+            rows = cursor.fetchall()
+            conn.close()
+            
+            suggestions = []
+            for uid, fn, ln, mi, rfid in rows:
+                mi_str = f" {mi}." if mi else ""
+                full_name = f"{fn}{mi_str} {ln}"
+                rfid_str = f" - RFID: {rfid}" if rfid else ""
+                suggestions.append(f"{full_name} ({uid}){rfid_str}")
+                
+            from PyQt6.QtWidgets import QCompleter
+            completer = QCompleter(suggestions, self)
+            completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
+            completer.setFilterMode(Qt.MatchFlag.MatchContains)
+            completer.setMaxVisibleItems(10)
+            
+            completer.activated.connect(self.on_completer_activated)
+            self.search_input.setCompleter(completer)
+        except Exception as e:
+            print(f"Error setting up user autocomplete: {e}")
+
+    def on_completer_activated(self, text):
+        import re
+        match = re.search(r"\(([^)]+)\)", text)
+        if match:
+            user_id = match.group(1)
+            self.search_input.setText(user_id)
+            self.search_changed(user_id)
+
+    def search_changed(self, text):
+        self.current_page = 0
         self.load_users()
 
-    def prev_page(self):
-        if self.current_page > 1:
-            self.current_page -= 1
-            self.load_users()
-
-    def next_page(self):
-        self.current_page += 1
+    def switch_page(self, page):
+        self.current_page = page
         self.load_users()
+
+    def draw_pagination_controls(self, total_matches):
+        while self.pages_layout.count():
+            item = self.pages_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+            
+        import math
+        total_pages = math.ceil(total_matches / self.page_size)
+        if total_pages <= 1:
+            return
+            
+        def create_page_btn(text, target_page, active=False):
+            btn = QPushButton(text)
+            btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            btn.setFixedSize(28, 28)
+            if active:
+                btn.setStyleSheet("""
+                    QPushButton {
+                        background-color: #11224d;
+                        color: #ffffff;
+                        border: none;
+                        border-radius: 4px;
+                        font-weight: bold;
+                        font-size: 11px;
+                    }
+                """)
+            else:
+                btn.setStyleSheet("""
+                    QPushButton {
+                        background-color: #ffffff;
+                        color: #4b5563;
+                        border: 1px solid #e5e7eb;
+                        border-radius: 4px;
+                        font-size: 11px;
+                    }
+                    QPushButton:hover {
+                        background-color: #f3f4f6;
+                    }
+                """)
+            btn.clicked.connect(lambda checked, t=target_page: self.switch_page(t))
+            return btn
+
+        # Left arrow
+        prev_page = max(0, self.current_page - 1)
+        prev_btn = create_page_btn("<", prev_page)
+        prev_btn.setEnabled(self.current_page > 0)
+        if self.current_page == 0:
+            prev_btn.setStyleSheet("""
+                QPushButton {
+                    background-color: transparent;
+                    color: #d1d5db;
+                    border: 1px solid #e5e7eb;
+                    border-radius: 4px;
+                    font-size: 11px;
+                }
+            """)
+        self.pages_layout.addWidget(prev_btn)
+        
+        # Sliding window calculation
+        pages_to_show = []
+        if total_pages <= 7:
+            pages_to_show = list(range(total_pages))
+        else:
+            middle_start = max(1, self.current_page - 1)
+            middle_end = min(total_pages - 2, self.current_page + 1)
+            
+            if self.current_page <= 2:
+                middle_start = 1
+                middle_end = 3
+            elif self.current_page >= total_pages - 3:
+                middle_start = total_pages - 4
+                middle_end = total_pages - 2
+                
+            pages_to_show.append(0)
+            if middle_start > 1:
+                pages_to_show.append("...")
+            for i in range(middle_start, middle_end + 1):
+                pages_to_show.append(i)
+            if middle_end < total_pages - 2:
+                pages_to_show.append("...")
+            pages_to_show.append(total_pages - 1)
+            
+        for item in pages_to_show:
+            if item == "...":
+                dots = QLabel("...")
+                dots.setStyleSheet("color: #9ca3af; font-size: 11px;")
+                dots.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                dots.setFixedSize(28, 28)
+                self.pages_layout.addWidget(dots)
+            else:
+                self.pages_layout.addWidget(create_page_btn(str(item + 1), item, active=(item == self.current_page)))
+                
+        # Right arrow
+        next_page = min(total_pages - 1, self.current_page + 1)
+        next_btn = create_page_btn(">", next_page)
+        next_btn.setEnabled(self.current_page < total_pages - 1)
+        if self.current_page == total_pages - 1:
+            next_btn.setStyleSheet("""
+                QPushButton {
+                    background-color: transparent;
+                    color: #d1d5db;
+                    border: 1px solid #e5e7eb;
+                    border-radius: 4px;
+                    font-size: 11px;
+                }
+            """)
+        self.pages_layout.addWidget(next_btn)
 
     def load_users(self):
-        query_str = self.search_input.text().strip()
-        offset = (self.current_page - 1) * self.items_per_page
-        
+        sync_overdue_penalties(self.db_path)
+        import re
+        raw_text = self.search_input.text().strip()
+        match = re.search(r"\(([^)]+)\)", raw_text)
+        if match:
+            query_str = match.group(1).strip()
+            self.search_input.setText(query_str)
+        else:
+            query_str = raw_text
         try:
             conn = sqlite3.connect(self.db_path)
             cursor = conn.cursor()
             
-            # 1. First, fetch total matched counts to configure navigation bounds
-            if query_str:
-                cursor.execute("""
-                    SELECT COUNT(*) FROM USER 
-                    WHERE user_id LIKE ? OR first_name LIKE ? OR last_name LIKE ? OR rfid_uid LIKE ?
-                """, (f"%{query_str}%", f"%{query_str}%", f"%{query_str}%", f"%{query_str}%"))
-            else:
-                cursor.execute("SELECT COUNT(*) FROM USER")
-            
-            total_records = cursor.fetchone()[0]
-            total_pages = max(1, (total_records + self.items_per_page - 1) // self.items_per_page)
-            
-            # Guard window check bounds
-            if self.current_page > total_pages:
-                self.current_page = total_pages
-                offset = (self.current_page - 1) * self.items_per_page
-
-            # 2. Extract paginated rows segment via LIMIT and OFFSET
+            # Fetch active rentals via RENTAL table
+            now = datetime.now()
+            cursor.execute("""
+                SELECT r.user_id, r.due_date 
+                FROM RENTAL r
+                WHERE r.return_date IS NULL OR r.return_date = ''
+            """)
+            active_rentals = {}
+            for uid, due_str in cursor.fetchall():
+                is_overdue = False
+                try:
+                    parts = due_str.split(" ")
+                    dt_parts = parts[0].split("-")
+                    tm_parts = parts[1].split(":")
+                    ampm = parts[2]
+                    hr = int(tm_parts[0])
+                    mn = int(tm_parts[1])
+                    if ampm == "PM" and hr < 12:
+                        hr += 12
+                    elif ampm == "AM" and hr == 12:
+                        hr = 0
+                    due_dt = datetime(int(dt_parts[0]), int(dt_parts[1]), int(dt_parts[2]), hr, mn)
+                    if now > due_dt:
+                        is_overdue = True
+                except Exception:
+                    pass
+                if uid not in active_rentals:
+                    active_rentals[uid] = []
+                active_rentals[uid].append(is_overdue)
+                
             if query_str:
                 cursor.execute("""
                     SELECT user_id, first_name, last_name, m_i, rfid_uid 
                     FROM USER 
                     WHERE user_id LIKE ? OR first_name LIKE ? OR last_name LIKE ? OR rfid_uid LIKE ?
                     ORDER BY user_id ASC
-                    LIMIT ? OFFSET ?
-                """, (f"%{query_str}%", f"%{query_str}%", f"%{query_str}%", f"%{query_str}%", self.items_per_page, offset))
+                """, (f"%{query_str}%", f"%{query_str}%", f"%{query_str}%", f"%{query_str}%"))
             else:
-                cursor.execute("""
-                    SELECT user_id, first_name, last_name, m_i, rfid_uid 
-                    FROM USER 
-                    ORDER BY user_id ASC 
-                    LIMIT ? OFFSET ?
-                """, (self.items_per_page, offset))
-                
+                cursor.execute("SELECT user_id, first_name, last_name, m_i, rfid_uid FROM USER ORDER BY user_id ASC")
             rows = cursor.fetchall()
             conn.close()
 
-            # 3. Update footer navigation states
-            self.page_lbl.setText(f"Page {self.current_page} of {total_pages} ({total_records} total users)")
-            self.prev_btn.setEnabled(self.current_page > 1)
-            self.next_btn.setEnabled(self.current_page < total_pages)
+            total_matches = len(rows)
+            start_num = self.current_page * self.page_size + 1 if total_matches > 0 else 0
+            end_num = min(start_num + self.page_size - 1, total_matches)
+            self.stats_lbl.setText(f"Showing {start_num}-{end_num} of {total_matches} students")
+            
+            paginated_rows = rows[self.current_page * self.page_size : (self.current_page + 1) * self.page_size]
 
-            # 4. Populating Data Matrix rows
             self.table.setRowCount(0)
-            for idx, row in enumerate(rows):
+            self.table.verticalHeader().setVisible(False)
+            
+            for idx, row in enumerate(paginated_rows):
                 self.table.insertRow(idx)
-                for col_idx, val in enumerate(row):
+                user_id = row[0]
+                
+                # Base User Fields (Columns 0-3: user_id, first_name, last_name, m_i)
+                for col_idx in range(4):
+                    val = row[col_idx]
                     item = QTableWidgetItem(str(val) if val else "")
                     item.setFlags(item.flags() ^ Qt.ItemFlag.ItemIsEditable)
-                    if col_idx in [0, 3, 4]:
+                    if col_idx in [0, 3]:
                         item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
                         if col_idx == 0:
                             item.setForeground(QColor("#11224d"))
                     self.table.setItem(idx, col_idx, item)
                 
-                # Dynamic action layouts
+                # Column 4: Status/Standing badge mapped to standard values (Overdue/Active/Returned)
+                user_active = active_rentals.get(user_id, [])
+                has_overdue = any(user_active)
+                has_active = len(user_active) > 0
+                
+                if has_overdue:
+                    standing_text = "Overdue"
+                    standing_color = "#dc2626" # Red
+                elif has_active:
+                    standing_text = "Active"
+                    standing_color = "#2563eb" # Blue
+                else:
+                    standing_text = "Returned"
+                    standing_color = "#10b981" # Green
+                    
+                status_lbl = QLabel(standing_text)
+                status_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                status_lbl.setStyleSheet(f"""
+                    QLabel {{
+                        color: {standing_color};
+                        font-weight: bold;
+                        font-size: 11px;
+                        background-color: transparent;
+                    }}
+                """)
+                self.table.setCellWidget(idx, 4, status_lbl)
+                
+                # Column 5: Action buttons (Edit & Delete)
                 actions_widget = QWidget()
                 actions_layout = QHBoxLayout(actions_widget)
                 actions_layout.setContentsMargins(6, 2, 6, 2)
-                actions_layout.setSpacing(10)
+                actions_layout.setSpacing(8)
                 actions_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
                 
-                # Green Tinted Edit Button
                 edit_btn = QPushButton("✏ Edit")
                 edit_btn.setCursor(Qt.CursorShape.PointingHandCursor)
                 edit_btn.setStyleSheet("""
                     QPushButton {
-                        background-color: #ecfdf5;
-                        color: #047857;
-                        border: 1px solid #a7f3d0;
+                        background-color: #f0fdf4;
+                        color: #15803d;
+                        border: 1px solid #bbf7d0;
                         border-radius: 4px;
                         font-size: 10px;
                         padding: 3px 8px;
                         font-weight: bold;
                     }
                     QPushButton:hover {
-                        background-color: #34d399;
+                        background-color: #22c55e;
                         color: #ffffff;
                     }
                 """)
-                edit_btn.clicked.connect(lambda checked, r=row: self.edit_student(r))
+                edit_btn.clicked.connect(lambda checked, u=user_id, fn=row[1], ln=row[2], mi=row[3], rfid=row[4]: self.edit_user(u, fn, ln, mi, rfid))
+                actions_layout.addWidget(edit_btn)
                 
-                # Red Tinted Delete Button
                 del_btn = QPushButton("🗑 Delete")
                 del_btn.setCursor(Qt.CursorShape.PointingHandCursor)
                 del_btn.setStyleSheet("""
@@ -313,345 +501,564 @@ class UsersTab(QWidget):
                         color: #ffffff;
                     }
                 """)
-                del_btn.clicked.connect(lambda checked, uid=row[0]: self.delete_student(uid))
-                
-                actions_layout.addWidget(edit_btn)
+                del_btn.clicked.connect(lambda checked, u=user_id: self.delete_user(u))
                 actions_layout.addWidget(del_btn)
+                
                 self.table.setCellWidget(idx, 5, actions_widget)
                 
+            self.draw_pagination_controls(total_matches)
         except Exception as e:
             QMessageBox.critical(self, "Database Error", f"Failed to retrieve user registry: {e}")
 
-    def add_student(self):
-        dialog = StudentRegistrationDialog(self.db_path, parent=self)
-        if dialog.exec():
-            self.load_users()
+    def edit_user(self, user_id, first_name, last_name, m_i, rfid_uid):
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Edit Student Registry")
+        dialog.setFixedWidth(460)
+        dialog.setStyleSheet("background-color: #ffffff;")
+        
+        # Main layout with zero outer margins
+        layout = QVBoxLayout(dialog)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+        
+        # Header Banner Container
+        hdr_frame = QFrame()
+        hdr_frame.setStyleSheet("background-color: #11224d; border: none;")
+        hdr_layout = QHBoxLayout(hdr_frame)
+        hdr_layout.setContentsMargins(20, 16, 20, 16)
+        hdr_layout.setSpacing(14)
+        
+        avatar_lbl = QLabel("👤")
+        avatar_lbl.setFixedSize(44, 44)
+        avatar_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        avatar_lbl.setStyleSheet("""
+            QLabel {
+                background-color: #f59e0b;
+                color: #11224d;
+                font-size: 24px;
+                font-weight: bold;
+                border-radius: 8px;
+            }
+        """)
+        
+        hdr_txt_layout = QVBoxLayout()
+        hdr_txt_layout.setSpacing(2)
+        hdr_txt_layout.setContentsMargins(0, 0, 0, 0)
+        
+        title_lbl = QLabel("Edit student details")
+        title_lbl.setStyleSheet("color: #ffffff; font-size: 16px; font-weight: bold; font-family: 'Segoe UI', system-ui, sans-serif;")
+        
+        sub_title_lbl = QLabel("Raincheck | Umbrella Rental System")
+        sub_title_lbl.setStyleSheet("color: #93c5fd; font-size: 11px; font-family: 'Segoe UI', system-ui, sans-serif;")
+        
+        hdr_txt_layout.addWidget(title_lbl)
+        hdr_txt_layout.addWidget(sub_title_lbl)
+        
+        hdr_layout.addWidget(avatar_lbl)
+        hdr_layout.addLayout(hdr_txt_layout)
+        hdr_layout.addStretch()
+        
+        layout.addWidget(hdr_frame)
+        
+        # Form Body Container
+        body_widget = QWidget()
+        body_layout = QVBoxLayout(body_widget)
+        body_layout.setContentsMargins(24, 20, 24, 24)
+        body_layout.setSpacing(16)
+        
+        # Student ID read-only field
+        id_lbl = QLabel("STUDENT ID (READ-ONLY)")
+        id_lbl.setStyleSheet("color: #4b5563; font-weight: bold; font-size: 10px; font-family: 'Segoe UI', sans-serif; letter-spacing: 0.5px;")
+        id_input = QLineEdit(user_id)
+        id_input.setEnabled(False)
+        id_input.setStyleSheet("""
+            QLineEdit {
+                background-color: #f3f4f6;
+                color: #9ca3af;
+                border: 1px solid #cbd5e1;
+                border-radius: 8px;
+                padding: 10px 14px;
+                font-size: 13px;
+                font-family: monospace;
+            }
+        """)
+        
+        body_layout.addWidget(id_lbl)
+        body_layout.addWidget(id_input)
+        
+        # Names row (First name, Last name, M.I.)
+        name_row = QHBoxLayout()
+        name_row.setSpacing(10)
+        
+        # First Name
+        fn_col = QVBoxLayout()
+        fn_col.setSpacing(4)
+        fn_lbl = QLabel("FIRST NAME")
+        fn_lbl.setStyleSheet("color: #4b5563; font-weight: bold; font-size: 10px; font-family: 'Segoe UI', sans-serif; letter-spacing: 0.5px;")
+        fn_input = QLineEdit(first_name)
+        fn_col.addWidget(fn_lbl)
+        fn_col.addWidget(fn_input)
+        
+        # Last Name
+        ln_col = QVBoxLayout()
+        ln_col.setSpacing(4)
+        ln_lbl = QLabel("LAST NAME")
+        ln_lbl.setStyleSheet("color: #4b5563; font-weight: bold; font-size: 10px; font-family: 'Segoe UI', sans-serif; letter-spacing: 0.5px;")
+        ln_input = QLineEdit(last_name)
+        ln_col.addWidget(ln_lbl)
+        ln_col.addWidget(ln_input)
+        
+        # Middle Initial
+        mi_col = QVBoxLayout()
+        mi_col.setSpacing(4)
+        mi_lbl = QLabel("MIDDLE INITIAL")
+        mi_lbl.setStyleSheet("color: #4b5563; font-weight: bold; font-size: 10px; font-family: 'Segoe UI', sans-serif; letter-spacing: 0.5px;")
+        mi_input = QLineEdit(m_i)
+        mi_input.setMaxLength(2)
+        mi_col.addWidget(mi_lbl)
+        mi_col.addWidget(mi_input)
+        
+        name_inputs = [fn_input, ln_input, mi_input]
+        for nm_inp in name_inputs:
+            nm_inp.setStyleSheet("""
+                QLineEdit {
+                    border: 1px solid #cbd5e1;
+                    border-radius: 8px;
+                    padding: 8px 12px;
+                    font-size: 13px;
+                    color: #111827;
+                    background-color: #ffffff;
+                }
+                QLineEdit:focus {
+                    border: 2px solid #11224d;
+                }
+            """)
+            
+        name_row.addLayout(fn_col, 4)
+        name_row.addLayout(ln_col, 4)
+        name_row.addLayout(mi_col, 2)
+        body_layout.addLayout(name_row)
+        
+        from PyQt6.QtGui import QRegularExpressionValidator
+        from PyQt6.QtCore import QRegularExpression
+        
+        # Name validation: letters only
+        name_regex = QRegularExpression("^[a-zA-Z\\s]*$")
+        name_validator = QRegularExpressionValidator(name_regex, self)
+        fn_input.setValidator(name_validator)
+        ln_input.setValidator(name_validator)
+        
+        # M.I. restriction
+        mi_regex = QRegularExpression("^[a-zA-Z\\s\\.]*$")
+        mi_validator = QRegularExpressionValidator(mi_regex, self)
+        mi_input.setValidator(mi_validator)
+        
+        # Buttons Row
+        btn_box = QHBoxLayout()
+        btn_box.setSpacing(12)
+        
+        cancel_btn = QPushButton("Cancel")
+        cancel_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        cancel_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #ffffff;
+                color: #11224d;
+                border: 1px solid #11224d;
+                border-radius: 8px;
+                padding: 10px 24px;
+                font-weight: bold;
+                font-size: 13px;
+                font-family: 'Segoe UI', system-ui, sans-serif;
+            }
+            QPushButton:hover {
+                background-color: #f1f5f9;
+            }
+        """)
+        
+        save_btn = QPushButton("💾 Update")
+        save_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        save_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #11224d;
+                color: #ffffff;
+                border: none;
+                border-radius: 8px;
+                padding: 10px 24px;
+                font-weight: bold;
+                font-size: 13px;
+                font-family: 'Segoe UI', system-ui, sans-serif;
+            }
+            QPushButton:hover {
+                background-color: #1d3570;
+            }
+        """)
+        
+        btn_box.addWidget(cancel_btn, 1)
+        btn_box.addWidget(save_btn, 1)
+        body_layout.addLayout(btn_box)
+        
+        layout.addWidget(body_widget)
+        
+        cancel_btn.clicked.connect(dialog.reject)
+        
+        def save():
+            fn = fn_input.text().strip()
+            ln = ln_input.text().strip()
+            mi = mi_input.text().strip().upper()
+            rf = rfid_input.text().strip()
+            
+            if not fn or not ln:
+                QMessageBox.warning(dialog, "Missing Fields", "First Name and Last Name are required.")
+                return
+                
+            try:
+                conn = sqlite3.connect(self.db_path)
+                cursor = conn.cursor()
+                cursor.execute("""
+                    UPDATE USER 
+                    SET first_name = ?, last_name = ?, m_i = ?, rfid_uid = ? 
+                    WHERE user_id = ?
+                """, (fn, ln, mi, rf, user_id))
+                conn.commit()
+                conn.close()
+                dialog.accept()
+                
+                main_win = self.window()
+                if main_win and hasattr(main_win, "refresh_stats"):
+                    main_win.refresh_stats()
+                self.load_users()
+            except Exception as e:
+                QMessageBox.critical(dialog, "Database Error", f"Failed to update user: {e}")
+                
+        save_btn.clicked.connect(save)
+        dialog.exec()
 
-    def edit_student(self, user_data):
-        dialog = StudentRegistrationDialog(self.db_path, edit_user_data=user_data, parent=self)
-        if dialog.exec():
-            self.load_users()
-
-    def delete_student(self, user_id):
+    def delete_user(self, user_id):
+        from datetime import datetime
         try:
             conn = sqlite3.connect(self.db_path)
             cursor = conn.cursor()
             
-            # 1. FIXED: Subquery check matching rent_id across rents and returns
+            # Check active rental limit using RENTAL table
             cursor.execute("""
-                SELECT COUNT(*) FROM rents 
-                WHERE user_id = ? AND rent_id NOT IN (SELECT rent_id FROM returns)
+                SELECT COUNT(*) FROM RENTAL r
+                WHERE r.user_id = ? AND (r.return_date IS NULL OR r.return_date = '')
             """, (user_id,))
-            active_rents = cursor.fetchone()[0]
+            active_count = cursor.fetchone()[0]
             
-            if active_rents > 0:
-                QMessageBox.warning(
-                    self, "Deletion Blocked",
-                    f"Cannot delete Student ID {user_id}.\nThis student currently has an active umbrella rental checked out."
-                )
-                conn.close()
-                return
+            # Check outstanding unpaid penalties count
+            cursor.execute("SELECT COUNT(*) FROM penalty WHERE user_id = ? AND paid_status = 'Unpaid'", (user_id,))
+            penalty_count = cursor.fetchone()[0]
+            
+            overdue_count = 0
+            if active_count > 0:
+                cursor.execute("""
+                    SELECT r.due_date FROM RENTAL r
+                    WHERE r.user_id = ? AND (r.return_date IS NULL OR r.return_date = '')
+                """, (user_id,))
+                due_dates = [r[0] for r in cursor.fetchall()]
+                now = datetime.now()
+                for due_str in due_dates:
+                    try:
+                        parts = due_str.split(" ")
+                        dt_parts = parts[0].split("-")
+                        tm_parts = parts[1].split(":")
+                        ampm = parts[2]
+                        hr = int(tm_parts[0])
+                        mn = int(tm_parts[1])
+                        if ampm == "PM" and hr < 12:
+                            hr += 12
+                        elif ampm == "AM" and hr == 12:
+                            hr = 0
+                        due_dt = datetime(int(dt_parts[0]), int(dt_parts[1]), int(dt_parts[2]), hr, mn)
+                        if now > due_dt:
+                            overdue_count += 1
+                    except Exception:
+                        pass
+            conn.close()
+            
+            if active_count > 0 or penalty_count > 0:
+                reasons = []
+                if overdue_count > 0:
+                    reasons.append("has active overdue rental")
+                elif active_count > 0:
+                    reasons.append("has an active umbrella rental checked out")
+                if penalty_count > 0:
+                    reasons.append(f"has {penalty_count} outstanding unpaid penalty/fines")
                 
-            # 2. Check for Unresolved Penalties
-            cursor.execute("""
-                SELECT COUNT(*) FROM penalty 
-                WHERE user_id = ? AND paid_status IN ('Unpaid', 'Pending')
-            """, (user_id,))
-            unresolved_penalties = cursor.fetchone()[0]
-            
-            if unresolved_penalties > 0:
-                QMessageBox.warning(
-                    self, "Deletion Blocked",
-                    f"Cannot delete Student ID {user_id}.\nThis student has unresolved or unpaid penalties on their account."
-                )
-                conn.close()
-                return
+                reason_text = "This student currently: " + " and ".join(reasons) + "."
+                if len(reasons) == 1 and "has an active umbrella rental checked out" in reasons[0]:
+                    reason_text = "This student currently has an active umbrella rental checked out."
                 
-            # 3. Proceed with deletion confirmation
-            confirm = QMessageBox.question(
-                self, "Confirm Deletion",
-                f"Are you sure you want to permanently delete Student ID {user_id} from the system database?",
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                QMessageBox.StandardButton.No
-            )
-            
-            if confirm == QMessageBox.StandardButton.Yes:
+                warning_dialog = CustomCannotDeleteWarningDialog(
+                    "Cannot delete user",
+                    user_id,
+                    "User ID {} cannot be deleted.",
+                    sub_text=reason_text,
+                    parent=self
+                )
+                warning_dialog.exec()
+                return
+        except Exception as e:
+            print(f"Error checking status for user deletion: {e}")
+
+        # Show Delete User Dialog using Custom confirmation dialog
+        confirm_dialog = CustomDeleteConfirmationDialog(
+            "Delete user",
+            user_id,
+            "Are you sure you want to permanently delete User ID {} from the system database?<br>This action cannot be undone.",
+            parent=self
+        )
+        if confirm_dialog.exec() == QDialog.DialogCode.Accepted:
+            try:
+                conn = sqlite3.connect(self.db_path)
+                cursor = conn.cursor()
                 cursor.execute("DELETE FROM USER WHERE user_id = ?", (user_id,))
                 conn.commit()
                 conn.close()
+                
+                main_win = self.window()
+                if main_win and hasattr(main_win, "refresh_stats"):
+                    main_win.refresh_stats()
+                    
                 self.load_users()
-            else:
-                conn.close()
-                
-        except Exception as e:
-            QMessageBox.critical(self, "Database Error", f"Failed to remove user: {e}")
+            except Exception as e:
+                QMessageBox.critical(self, "Database Error", f"Failed to delete user: {e}")
 
-class StudentRegistrationDialog(QDialog):
-    """Custom registration dialog supporting both creation and non-RFID modification modes."""
-    def __init__(self, db_path, edit_user_data=None, parent=None):
-        super().__init__(parent)
-        self.db_path = db_path
-        self.edit_user_data = edit_user_data
-        self.is_edit_mode = edit_user_data is not None
-        self.rfid_uid = edit_user_data[4] if self.is_edit_mode else ""
-        self.init_ui()
+    def add_student(self):
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Register New Student")
+        dialog.setFixedWidth(460)
+        dialog.setStyleSheet("background-color: #ffffff;")
         
-    def init_ui(self):
-        self.setWindowTitle("Edit Student Profile" if self.is_edit_mode else "Register New Student")
-        self.setFixedWidth(460)
-        self.setStyleSheet("QDialog { background-color: #ffffff; }")
+        # Main layout with zero outer margins
+        layout = QVBoxLayout(dialog)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
         
-        main_layout = QVBoxLayout(self)
-        main_layout.setContentsMargins(0, 0, 0, 0)
-        main_layout.setSpacing(0)
+        # Header Banner Container
+        hdr_frame = QFrame()
+        hdr_frame.setStyleSheet("background-color: #11224d; border: none;")
+        hdr_layout = QHBoxLayout(hdr_frame)
+        hdr_layout.setContentsMargins(20, 16, 20, 16)
+        hdr_layout.setSpacing(14)
         
-        # Header layout
-        header_frame = QFrame()
-        header_frame.setStyleSheet("QFrame { background-color: #11224d; border: none; }")
-        header_layout = QHBoxLayout(header_frame)
-        header_layout.setContentsMargins(20, 18, 20, 18)
-        header_layout.setSpacing(14)
-        
-        icon_badge = QLabel("👤")
-        icon_badge.setFixedSize(44, 44)
-        icon_badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        icon_badge.setStyleSheet("QLabel { background-color: #f59e0b; border-radius: 8px; font-size: 22px; color: #ffffff; font-weight: bold; border: none; }")
-        
-        title_layout = QVBoxLayout()
-        title_layout.setSpacing(2)
-        title_lbl = QLabel("Edit student profile" if self.is_edit_mode else "Register new student")
-        title_lbl.setStyleSheet("QLabel { color: #ffffff; font-size: 16px; font-weight: bold; font-family: 'Segoe UI', Arial, sans-serif; }")
-        subtitle_lbl = QLabel("Raincheck | Umbrella Rental System")
-        subtitle_lbl.setStyleSheet("QLabel { color: #8da2cf; font-size: 11px; font-family: 'Segoe UI', Arial, sans-serif; }")
-        title_layout.addWidget(title_lbl)
-        title_layout.addWidget(subtitle_lbl)
-        
-        header_layout.addWidget(icon_badge)
-        header_layout.addLayout(title_layout)
-        header_layout.addStretch()
-        main_layout.addWidget(header_frame)
-        
-        # Form body
-        body_frame = QFrame()
-        body_frame.setStyleSheet("QFrame { background-color: #ffffff; border: none; }")
-        body_layout = QVBoxLayout(body_frame)
-        body_layout.setContentsMargins(24, 24, 24, 24)
-        body_layout.setSpacing(18)
-        
-        # ID input
-        id_layout = QVBoxLayout()
-        id_layout.setSpacing(6)
-        id_lbl = QLabel("STUDENT ID")
-        id_lbl.setStyleSheet("QLabel { color: #6b7280; font-size: 10px; font-weight: bold; letter-spacing: 0.8px; }")
-        self.id_input = QLineEdit()
-        self.id_input.setPlaceholderText("e.g. 2021-0008")
-        self.id_input.setStyleSheet("""
-            QLineEdit { background-color: #ffffff; color: #111827; border: 1px solid #d1d5db; border-radius: 6px; padding: 10px 12px; font-size: 13px; }
-            QLineEdit:focus { border: 2px solid #11224d; }
-            QLineEdit:disabled { background-color: #f3f4f6; color: #6b7280; }
+        avatar_lbl = QLabel("👤")
+        avatar_lbl.setFixedSize(44, 44)
+        avatar_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        avatar_lbl.setStyleSheet("""
+            QLabel {
+                background-color: #f59e0b;
+                color: #11224d;
+                font-size: 24px;
+                font-weight: bold;
+                border-radius: 8px;
+            }
         """)
-        if self.is_edit_mode:
-            self.id_input.setText(self.edit_user_data[0])
-            self.id_input.setEnabled(False)
-        id_layout.addWidget(id_lbl)
-        id_layout.addWidget(self.id_input)
-        body_layout.addLayout(id_layout)
         
-        # Names group row
-        names_layout = QHBoxLayout()
-        names_layout.setSpacing(12)
+        hdr_txt_layout = QVBoxLayout()
+        hdr_txt_layout.setSpacing(2)
+        hdr_txt_layout.setContentsMargins(0, 0, 0, 0)
         
-        fn_layout = QVBoxLayout()
-        fn_layout.setSpacing(6)
+        title_lbl = QLabel("Register new student")
+        title_lbl.setStyleSheet("color: #ffffff; font-size: 16px; font-weight: bold; font-family: 'Segoe UI', system-ui, sans-serif;")
+        
+        sub_title_lbl = QLabel("Raincheck | Umbrella Rental System")
+        sub_title_lbl.setStyleSheet("color: #93c5fd; font-size: 11px; font-family: 'Segoe UI', system-ui, sans-serif;")
+        
+        hdr_txt_layout.addWidget(title_lbl)
+        hdr_txt_layout.addWidget(sub_title_lbl)
+        
+        hdr_layout.addWidget(avatar_lbl)
+        hdr_layout.addLayout(hdr_txt_layout)
+        hdr_layout.addStretch()
+        
+        layout.addWidget(hdr_frame)
+        
+        # Form Body Container
+        body_widget = QWidget()
+        body_layout = QVBoxLayout(body_widget)
+        body_layout.setContentsMargins(24, 20, 24, 24)
+        body_layout.setSpacing(16)
+        
+        # Student ID field styled as a distinct hero card
+        id_lbl = QLabel("STUDENT ID")
+        id_lbl.setStyleSheet("color: #4b5563; font-weight: bold; font-size: 10px; font-family: 'Segoe UI', sans-serif; letter-spacing: 0.5px;")
+        id_input = QLineEdit()
+        id_input.setInputMask("0000-0000;_")
+        id_input.setPlaceholderText("e.g. 2021-0008")
+        id_input.setStyleSheet("""
+            QLineEdit {
+                border: 2px solid #11224d;
+                border-radius: 8px;
+                padding: 10px 14px;
+                font-size: 13px;
+                color: #111827;
+                background-color: #ffffff;
+            }
+            QLineEdit:focus {
+                border: 2px solid #2563eb;
+            }
+        """)
+        
+        body_layout.addWidget(id_lbl)
+        body_layout.addWidget(id_input)
+        
+        # Grid/Columns for Name fields side-by-side
+        name_row = QHBoxLayout()
+        name_row.setSpacing(10)
+        
+        # First Name
+        fn_col = QVBoxLayout()
+        fn_col.setSpacing(4)
         fn_lbl = QLabel("FIRST NAME")
-        fn_lbl.setStyleSheet("QLabel { color: #6b7280; font-size: 10px; font-weight: bold; letter-spacing: 0.8px; }")
-        self.fn_input = QLineEdit()
-        self.fn_input.setPlaceholderText("Maria")
-        self.fn_input.setStyleSheet("QLineEdit { background-color: #ffffff; color: #111827; border: 1px solid #d1d5db; border-radius: 6px; padding: 10px 12px; font-size: 13px; } QLineEdit:focus { border: 2px solid #11224d; }")
-        if self.is_edit_mode:
-            self.fn_input.setText(self.edit_user_data[1])
-        fn_layout.addWidget(fn_lbl)
-        fn_layout.addWidget(self.fn_input)
+        fn_lbl.setStyleSheet("color: #4b5563; font-weight: bold; font-size: 10px; font-family: 'Segoe UI', sans-serif; letter-spacing: 0.5px;")
+        fn_input = QLineEdit()
+        fn_input.setPlaceholderText("Maria")
+        fn_col.addWidget(fn_lbl)
+        fn_col.addWidget(fn_input)
         
-        ln_layout = QVBoxLayout()
-        ln_layout.setSpacing(6)
+        # Last Name
+        ln_col = QVBoxLayout()
+        ln_col.setSpacing(4)
         ln_lbl = QLabel("LAST NAME")
-        ln_lbl.setStyleSheet("QLabel { color: #6b7280; font-size: 10px; font-weight: bold; letter-spacing: 0.8px; }")
-        self.ln_input = QLineEdit()
-        self.ln_input.setPlaceholderText("Reyes")
-        self.ln_input.setStyleSheet("QLineEdit { background-color: #ffffff; color: #111827; border: 1px solid #d1d5db; border-radius: 6px; padding: 10px 12px; font-size: 13px; } QLineEdit:focus { border: 2px solid #11224d; }")
-        if self.is_edit_mode:
-            self.ln_input.setText(self.edit_user_data[2])
-        ln_layout.addWidget(ln_lbl)
-        ln_layout.addWidget(self.ln_input)
+        ln_lbl.setStyleSheet("color: #4b5563; font-weight: bold; font-size: 10px; font-family: 'Segoe UI', sans-serif; letter-spacing: 0.5px;")
+        ln_input = QLineEdit()
+        ln_input.setPlaceholderText("Reyes")
+        ln_col.addWidget(ln_lbl)
+        ln_col.addWidget(ln_input)
         
-        mi_layout = QVBoxLayout()
-        mi_layout.setSpacing(6)
+        # Middle Initial
+        mi_col = QVBoxLayout()
+        mi_col.setSpacing(4)
         mi_lbl = QLabel("MIDDLE INITIAL")
-        mi_lbl.setStyleSheet("QLabel { color: #6b7280; font-size: 10px; font-weight: bold; letter-spacing: 0.8px; }")
-        self.mi_input = QLineEdit()
-        self.mi_input.setPlaceholderText("C.")
-        self.mi_input.setStyleSheet("QLineEdit { background-color: #ffffff; color: #111827; border: 1px solid #d1d5db; border-radius: 6px; padding: 10px 12px; font-size: 13px; } QLineEdit:focus { border: 2px solid #11224d; }")
-        if self.is_edit_mode and self.edit_user_data[3]:
-            self.mi_input.setText(self.edit_user_data[3])
-        mi_layout.addWidget(mi_lbl)
-        mi_layout.addWidget(self.mi_input)
+        mi_lbl.setStyleSheet("color: #4b5563; font-weight: bold; font-size: 10px; font-family: 'Segoe UI', sans-serif; letter-spacing: 0.5px;")
+        mi_input = QLineEdit()
+        mi_input.setPlaceholderText("C.")
+        mi_input.setMaxLength(2)
+        mi_col.addWidget(mi_lbl)
+        mi_col.addWidget(mi_input)
         
-        names_layout.addLayout(fn_layout, 4)
-        names_layout.addLayout(ln_layout, 4)
-        names_layout.addLayout(mi_layout, 2)
-        body_layout.addLayout(names_layout)
-        
-        # RFID Section
-        self.rfid_container = QFrame()
-        self.rfid_container.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.rfid_container.setObjectName("RfidContainer")
-        rfid_layout = QVBoxLayout(self.rfid_container)
-        rfid_layout.setContentsMargins(18, 16, 18, 16)
-        rfid_layout.setSpacing(12)
-        
-        self.signal_lbl = QLabel()
-        self.signal_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        inner_content_layout = QHBoxLayout()
-        inner_content_layout.setSpacing(14)
-        self.card_icon_badge = QLabel()
-        self.card_icon_badge.setFixedSize(40, 40)
-        self.card_icon_badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        
-        text_layout = QVBoxLayout()
-        text_layout.setSpacing(2)
-        self.action_title_lbl = QLabel()
-        self.action_desc_lbl = QLabel()
-        text_layout.addWidget(self.action_title_lbl)
-        text_layout.addWidget(self.action_desc_lbl)
-        
-        inner_content_layout.addWidget(self.card_icon_badge)
-        inner_content_layout.addLayout(text_layout)
-        inner_content_layout.addStretch()
-        rfid_layout.addWidget(self.signal_lbl)
-        rfid_layout.addLayout(inner_content_layout)
-        body_layout.addWidget(self.rfid_container)
-        
-        self.rfid_container.mousePressEvent = self.simulate_rfid_scan
-        self.update_rfid_ui()
-        
-        if self.is_edit_mode:
-            self.rfid_container.hide()
+        # Style fn, ln, mi textboxes
+        name_inputs = [fn_input, ln_input, mi_input]
+        for nm_inp in name_inputs:
+            nm_inp.setStyleSheet("""
+                QLineEdit {
+                    border: 1px solid #cbd5e1;
+                    border-radius: 8px;
+                    padding: 8px 12px;
+                    font-size: 13px;
+                    color: #111827;
+                    background-color: #ffffff;
+                }
+                QLineEdit:focus {
+                    border: 2px solid #11224d;
+                }
+            """)
             
-        buttons_layout = QHBoxLayout()
-        buttons_layout.setSpacing(12)
-        buttons_layout.addStretch()
+        name_row.addLayout(fn_col, 4)
+        name_row.addLayout(ln_col, 4)
+        name_row.addLayout(mi_col, 2)
+        body_layout.addLayout(name_row)
         
-        self.cancel_btn = QPushButton("Cancel")
-        self.cancel_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.cancel_btn.setStyleSheet("QPushButton { background-color: #ffffff; color: #11224d; border: 1px solid #11224d; border-radius: 6px; padding: 10px 24px; font-weight: bold; font-size: 13px; min-width: 80px; } QPushButton:hover { background-color: #f3f4f6; }")
-        self.cancel_btn.clicked.connect(self.reject)
+        from PyQt6.QtGui import QRegularExpressionValidator
+        from PyQt6.QtCore import QRegularExpression
         
-        self.save_btn = QPushButton("💾 Save")
-        self.save_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.save_btn.setStyleSheet("QPushButton { background-color: #11224d; color: #ffffff; border: none; border-radius: 6px; padding: 10px 24px; font-weight: bold; font-size: 13px; min-width: 100px; } QPushButton:hover { background-color: #1c326b; }")
-        self.save_btn.clicked.connect(self.save)
+        # Name constraints (letters and space only to match clean standards)
+        name_regex = QRegularExpression("^[a-zA-Z\\s]*$")
+        name_validator = QRegularExpressionValidator(name_regex, self)
+        fn_input.setValidator(name_validator)
+        ln_input.setValidator(name_validator)
         
-        buttons_layout.addWidget(self.cancel_btn)
-        buttons_layout.addWidget(self.save_btn)
-        body_layout.addLayout(buttons_layout)
-        main_layout.addWidget(body_frame)
-
-    def update_rfid_ui(self):
-        if not self.rfid_uid:
-            self.rfid_container.setStyleSheet("QFrame#RfidContainer { background-color: #eff6ff; border: 2px dashed #3b82f6; border-radius: 8px; }")
-            self.signal_lbl.setText("RFID CARD ENROLLMENT")
-            self.signal_lbl.setStyleSheet("color: #2563eb; font-weight: bold; font-size: 11px;")
-            self.card_icon_badge.setStyleSheet("QLabel { background-color: #dbeafe; color: #2563eb; font-size: 20px; border-radius: 6px; border: none; }")
-            self.card_icon_badge.setText("💳")
-            self.action_title_lbl.setText("Tap ID card on scanner now")
-            self.action_title_lbl.setStyleSheet("color: #1e40af; font-weight: bold; font-size: 13px;")
-            self.action_desc_lbl.setText("Hold card flat against the reader until confirmed")
-            self.action_desc_lbl.setStyleSheet("color: #3b82f6; font-size: 11px;")
-        else:
-            self.rfid_container.setStyleSheet("QFrame#RfidContainer { background-color: #ecfdf5; border: 2px dashed #10b981; border-radius: 8px; }")
-            self.signal_lbl.setText("CARD READ SUCCESSFULLY")
-            self.signal_lbl.setStyleSheet("color: #059669; font-weight: bold; font-size: 11px;")
-            self.card_icon_badge.setStyleSheet("QLabel { background-color: #d1fae5; color: #059669; font-size: 20px; border-radius: 6px; border: none; }")
-            self.card_icon_badge.setText("💳")
-            self.action_title_lbl.setText("Card detected - UID captured")
-            self.action_title_lbl.setStyleSheet("color: #065f46; font-weight: bold; font-size: 13px;")
-            self.action_desc_lbl.setText(f"RFID UID linked: {self.rfid_uid}")
-            self.action_desc_lbl.setStyleSheet("color: #059669; font-size: 11px;")
-
-    def simulate_rfid_scan(self, event):
-        import random
-        bytes_array = [f"{random.randint(0, 255):02X}" for _ in range(4)]
-        self.rfid_uid = "-".join(bytes_array)
-        self.update_rfid_ui()
-
-    def save(self):
-        uid = self.id_input.text().strip()
-        fn = self.fn_input.text().strip()
-        ln = self.ln_input.text().strip()
-        mi = self.mi_input.text().strip()
+        # Middle Initial constraints
+        mi_regex = QRegularExpression("^[a-zA-Z\\s\\.]*$")
+        mi_validator = QRegularExpressionValidator(mi_regex, self)
+        mi_input.setValidator(mi_validator)
+        mi_input.setMaxLength(2)
         
-        if not self.is_edit_mode:
-            id_match = re.match(r"^(\d+)-(\d+)$", uid)
-            if not id_match:
-                QMessageBox.warning(self, "Validation Error", "Please provide a valid Student ID in YYYY-XXXX format (e.g., 2021-0008).")
+        # Buttons Row
+        btn_box = QHBoxLayout()
+        btn_box.setSpacing(12)
+        
+        cancel_btn = QPushButton("Cancel")
+        cancel_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        cancel_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #ffffff;
+                color: #11224d;
+                border: 1px solid #11224d;
+                border-radius: 8px;
+                padding: 10px 24px;
+                font-weight: bold;
+                font-size: 13px;
+                font-family: 'Segoe UI', system-ui, sans-serif;
+            }
+            QPushButton:hover {
+                background-color: #f1f5f9;
+            }
+        """)
+        
+        save_btn = QPushButton("💾 Save")
+        save_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        save_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #11224d;
+                color: #ffffff;
+                border: none;
+                border-radius: 8px;
+                padding: 10px 24px;
+                font-weight: bold;
+                font-size: 13px;
+                font-family: 'Segoe UI', system-ui, sans-serif;
+            }
+            QPushButton:hover {
+                background-color: #1d3570;
+            }
+        """)
+        
+        btn_box.addWidget(cancel_btn, 1)
+        btn_box.addWidget(save_btn, 1)
+        body_layout.addLayout(btn_box)
+        
+        layout.addWidget(body_widget)
+        
+        cancel_btn.clicked.connect(dialog.reject)
+        
+        def save():
+            uid = id_input.text().strip()
+            fn = fn_input.text().strip()
+            ln = ln_input.text().strip()
+            mi = mi_input.text().strip().upper()
+            rf = rfid_input.text().strip()
+            
+            if not uid or not fn or not ln:
+                QMessageBox.warning(dialog, "Missing Fields", "ID, First Name, and Last Name are required.")
                 return
-            year_val = int(id_match.group(1))
-            num_val = int(id_match.group(2))
-            if not (2021 <= year_val <= 2026) or not (1 <= num_val <= 3000):
-                QMessageBox.warning(self, "Validation Error", "Student ID constraints violated:\n- Year part must be between 2021 and 2026.\n- Id part must be between 0001 and 3000.")
-                return
-            uid = f"{year_val}-{num_val:04d}"
-
-        if not fn or not fn.replace(" ", "").isalpha():
-            QMessageBox.warning(self, "Validation Error", "First Name is required and must only contain alphabet letters.")
-            return
-        if not ln or not ln.replace(" ", "").isalpha():
-            QMessageBox.warning(self, "Validation Error", "Last Name is required and must only contain alphabet letters.")
-            return
-            
-        fn = fn.capitalize()
-        ln = ln.capitalize()
-
-        if mi:
-            mi_clean = mi.rstrip('.')
-            if len(mi_clean) != 1 or not mi_clean.isalpha():
-                QMessageBox.warning(self, "Validation Error", "Middle Initial must be a single letter or left blank.")
-                return
-            mi = mi_clean.upper() + "."
-        else:
-            mi = ""
-            
-        try:
-            conn = sqlite3.connect(self.db_path)
-            cursor = conn.cursor()
-            
-            if self.is_edit_mode:
-                cursor.execute("""
-                    UPDATE USER 
-                    SET first_name = ?, last_name = ?, m_i = ? 
-                    WHERE user_id = ?
-                """, (fn, ln, mi, uid))
-            else:
-                cursor.execute("SELECT user_id FROM USER WHERE user_id = ?", (uid,))
-                if cursor.fetchone():
-                    QMessageBox.warning(self, "Duplicate Student ID", f"The Student ID '{uid}' is already registered.")
-                    conn.close()
-                    return
-                    
-                cursor.execute("SELECT user_id FROM USER WHERE rfid_uid = ?", (self.rfid_uid,))
-                if cursor.fetchone():
-                    QMessageBox.warning(self, "Duplicate RFID", "The scanned RFID tag is already enrolled.")
-                    conn.close()
-                    return
-                    
-                cursor.execute("""
-                    INSERT INTO USER (user_id, first_name, last_name, m_i, rfid_uid)
-                    VALUES (?, ?, ?, ?, ?)
-                """, (uid, fn, ln, mi, self.rfid_uid))
                 
-            conn.commit()
-            conn.close()
-            self.accept()
-        except Exception as e:
-            QMessageBox.critical(self, "Database Error", f"Failed to save record: {e}")
+            # Check mask completion
+            if len(uid) < 9 or "_" in uid or "-" not in uid:
+                QMessageBox.warning(dialog, "Invalid Student ID", "Please enter a valid Student ID in the format YYYY-NNNN (e.g. 2026-1234).")
+                return
+                
+            try:
+                conn = sqlite3.connect(self.db_path)
+                cursor = conn.cursor()
+                cursor.execute("""
+                    INSERT INTO USER (user_id, first_name, last_name, m_i, rfid_uid) 
+                    VALUES (?, ?, ?, ?, ?)
+                """, (uid, fn, ln, mi, rf))
+                conn.commit()
+                conn.close()
+                dialog.accept()
+                
+                # Refresh dashboard stats
+                main_win = self.window()
+                if main_win and hasattr(main_win, "refresh_stats"):
+                    main_win.refresh_stats()
+                    
+                self.load_users()
+            except Exception as e:
+                QMessageBox.critical(dialog, "Database Error", f"Registration failed: {e}")
+                
+        save_btn.clicked.connect(save)
+        dialog.exec()
