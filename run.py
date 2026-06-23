@@ -133,16 +133,35 @@ def init_database():
         first_names = [
             "John", "Mark", "Angelo", "Christian", "Joseph", "Joshua", "Miguel", 
             "Gabriel", "James", "Patrick", "Francis", "Dave", "Kyle", "Michael", 
-            "Mary", "Joy", "Maria", "Theresa", "Princess", "Sarah", "Nicole", 
-            "Anne", "Christine", "Samantha", "Mae", "Hannah", "Grace", "Patricia", 
-            "Marie", "Alyssa", "Ashley", "Jerome", "Renz", "Neil", "Bryan", 
-            "Adrian", "Aljon", "Jenny", "Katrina", "Rochelle", "Camille", "Kyla", 
-            "Charisse"
+"Mary", "Joy", "Maria", "Theresa", "Princess", "Sarah", "Nicole", 
+"Anne", "Christine", "Samantha", "Mae", "Hannah", "Grace", "Patricia", 
+"Marie", "Alyssa", "Ashley", "Jerome", "Renz", "Neil", "Bryan", 
+"Adrian", "Aljon", "Jenny", "Katrina", "Rochelle", "Camille", "Kyla", 
+"Charisse", "Daniel", "David", "Alexander", "Ethan", "Justine", "Kenneth", 
+"Justin", "Paul", "Matthew", "Ryan", "Kevin", "Aaron", "Charles", 
+"Nathan", "Sofia", "Chloe", "Angel", "Jessica", "Stephanie", "Erika", 
+"Kimberly", "Rica", "Bea", "Jasmine", "Ella", "Janine", "Kristine", 
+"Andrea", "Michelle", "Rachel", "Angela", "Janice", "Elaine", "Dominic", 
+"Vincent", "Jaymee", "Anthony", "Elijah", "Gabriel", "Ian", "Jason", 
+"Jeffrey", "Joel", "Jonathan", "Lester", "Luke", "Markus", "Oliver", 
+"Philip", "Richard", "Robert", "Sean", "Timothy", "Tristan", "Xavier", 
+"Abigail", "Angelica", "Bianca", "Catherine", "Cheska", "Clara", "Cynthia", 
+"Danica", "Denise", "Diana", "Divina", "Elena", "Elizabeth", "Emily", 
+"Fiona", "Giselle", "Gwyneth", "Hazel", "Irene", "Isabella", "Jade", 
+"Janelle", "Jenelyn", "Joanna", "Joyce", "Julianne", "Karen", "Kate"
         ]
         last_names = [
             "Canoy", "Cailing", "Adlaon", "Jabagat", "Catian", "Daligdig", 
-            "Ermac", "Cagampang", "Yacapin", "Flores", "Maglangit", 
-            "Macalisang", "Actub", "Lluch"
+            "Ermac", "Cagampang", "Yacapin", "Flores", "Maglangit", "Macalisang", 
+"Actub", "Lluch", "Badelles", "Bongcac", "Cabahug", "Quibranza", 
+"Dequito", "Pacana", "Balite", "Salvaña", "Uayan", "Siao", 
+"Ramiro", "Taglucop", "Zalsos", "Ocampos", "Sabellina", "Galarrita", 
+"Abellanosa", "Luminares", "Pangilinan", "Cabadisan", "Dagoc", "Nacalaban", 
+"Bacus", "Mabalacad", "Alfeche", "Dadang", "Dumadag", "Elises", 
+"Roa", "Gaane", "Borromeo", "Tabor", "Ragas", "Obsioma", 
+"Guiling", "Lao", "Baloria", "Jandayan", "Gille", "Peligrino", 
+"Calo", "Suan", "Gaputan", "Tamula", "Quilinging", "Bungcas", 
+"Lagrosas", "Emano", "Riconalla", "Abbu"
         ]
         generated_ids = set()
         while len(generated_ids) < 1000:
@@ -167,12 +186,12 @@ def init_database():
     # Seed 60 total Umbrellas (U-001 total to U-060)
     cursor.execute("SELECT COUNT(*) FROM Umbrella")
     if cursor.fetchone()[0] == 0:
-        for i in range(1, 61):
+        for i in range(1, 201):
             umb_id = f"U-{i:03d}"
-            if i <= 14:
+            if i <= 30:
                 status = "Rented"
                 condition = "Good"
-            elif i <= 18:
+            elif i <= 45:
                 status = "Maintenance"
                 condition = "Damaged"
             else:
@@ -193,13 +212,13 @@ def init_database():
         now = datetime.now()
         
         # 14 active rentals total
-        for idx in range(14):
+        for idx in range(30):
             umb_id = f"U-{idx+1:03d}"
             user_id = users[idx % len(users)]
             rent_id = f"{now.strftime('%m%d%y')}-{idx+1:03d}"
             
-            # Exactly first 3 overdue
-            is_overdue = (idx < 3)
+            # Exactly first 5 overdue
+            is_overdue = (idx < 5)
             if is_overdue:
                 rent_dt = now - timedelta(days=12)
                 due_dt = now - timedelta(days=5)
