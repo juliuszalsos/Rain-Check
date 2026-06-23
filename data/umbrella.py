@@ -230,7 +230,7 @@ class UmbrellasTab(QWidget):
         
         # 4. PAGINATION FOOTER ROW
         pagination_layout = QHBoxLayout()
-        self.stats_lbl = QLabel("Showing 1 to 7 of 60 umbrellas")
+        self.stats_lbl = QLabel("Showing 1 to 15 of 60 umbrellas")
         self.stats_lbl.setStyleSheet("color: #6b7280; font-size: 11px; font-family: 'Segoe UI';")
         pagination_layout.addWidget(self.stats_lbl)
         pagination_layout.addStretch()
@@ -753,6 +753,14 @@ class UmbrellaRegistrationDialog(QDialog):
             QLineEdit:focus { border: 2px solid #11224d; }
             QLineEdit:disabled { background-color: #f3f4f6; color: #6b7280; border: 1px solid #e5e7eb; }
         """)
+
+        # --- REGEX VALIDATOR ADDED HERE ---
+        from PyQt6.QtCore import QRegularExpression
+        from PyQt6.QtGui import QRegularExpressionValidator
+        # Allows typing 'U-' followed by up to 3 digits while they are typing
+        regex = QRegularExpression(r"^U-\d{0,3}$")
+        self.id_input.setValidator(QRegularExpressionValidator(regex, self.id_input))
+        # ----------------------------------
         
         if self.edit_mode:
             self.id_input.setText(self.umb_id)
@@ -841,6 +849,17 @@ class UmbrellaRegistrationDialog(QDialog):
         if not uid:
             QMessageBox.warning(self, "Validation Error", "Please provide a valid Umbrella ID.")
             return
+
+        # --- REGEX STRING VALIDATION CHECK ADDED HERE ---
+        import re
+        if not re.match(r"^U-\d{3}$", uid):
+            QMessageBox.warning(
+                self, 
+                "Invalid ID Format", 
+                f"The Umbrella ID '{uid}' is invalid.\n\nIt must perfectly follow the pattern: U-000\nExamples: U-001, U-015, U-100"
+            )
+            return
+        # ------------------------------------------------
             
         try:
             conn = sqlite3.connect(self.db_path)
