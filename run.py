@@ -130,8 +130,7 @@ def init_database():
             FOREIGN KEY(penalty_id) REFERENCES penalty(penalty_id)
         )
     """)
-
-    # Seed 50 randomized student records first
+    
     cursor.execute("SELECT COUNT(*) FROM USER")
     if cursor.fetchone()[0] == 0:
         first_names = [
@@ -173,7 +172,6 @@ def init_database():
     if cursor.fetchone()[0] == 0:
         for i in range(1, 61):
             umb_id = f"U-{i:03d}"
-            # Let's seed 14 Rented (U-001 - U-014), 4 Maintenance (U-015 - U-018), 42 Available (U-019 - U-060)
             if i <= 14:
                 status = "Rented"
                 condition = "Good"
