@@ -76,7 +76,7 @@ class UsersTab(QWidget):
         super().__init__(parent)
         self.db_path = db_path
         self.current_page = 0
-        self.page_size = 8
+        self.page_size = 100
         self.init_ui()
 
     def init_ui(self):

@@ -64,7 +64,7 @@ class UmbrellasTab(QWidget):
         self.current_filter = "All"
         self.search_text = ""
         self.current_page = 0
-        self.page_size = 7
+        self.page_size = 15
         self.init_ui()
 
     def init_ui(self):
@@ -230,7 +230,7 @@ class UmbrellasTab(QWidget):
         
         # 4. PAGINATION FOOTER ROW
         pagination_layout = QHBoxLayout()
-        self.stats_lbl = QLabel("Showing 1 to 7 of 60 umbrellas")
+        self.stats_lbl = QLabel("Showing 1 to 15 of 60 umbrellas")
         self.stats_lbl.setStyleSheet("color: #6b7280; font-size: 11px; font-family: 'Segoe UI';")
         pagination_layout.addWidget(self.stats_lbl)
         pagination_layout.addStretch()
