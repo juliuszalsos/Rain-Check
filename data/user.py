@@ -731,12 +731,25 @@ class UsersTab(QWidget):
             active_rentals = cursor.fetchone()[0]
             
             if active_rentals > 0:
-                dlg = CustomCannotDeleteWarningDialog("This student cannot be deleted because they currently have an active or overdue umbrella rental.", self)
+                # FIXED: Pass title, ID, reason, and parent
+                dlg = CustomCannotDeleteWarningDialog(
+                    "Action Blocked", 
+                    user_id,
+                    "Student {} cannot be deleted because they currently have an active or overdue umbrella rental.", 
+                    parent=self
+                )
                 dlg.exec()
                 conn.close()
                 return
                 
-            dlg = CustomDeleteConfirmationDialog(f"Are you sure you want to delete student ID {user_id}? This action cannot be undone.", self)
+            # FIXED: Pass title, ID, template (with {} for the badge), and parent
+            dlg = CustomDeleteConfirmationDialog(
+                "Delete Student", 
+                user_id, 
+                "Are you sure you want to delete student ID {}? This action cannot be undone.", 
+                parent=self
+            )
+            
             if dlg.exec():
                 cursor.execute("DELETE FROM USER WHERE user_id = ?", (user_id,))
                 conn.commit()
@@ -746,8 +759,10 @@ class UsersTab(QWidget):
                 if main_win and hasattr(main_win, "refresh_stats"):
                     main_win.refresh_stats()
             conn.close()
+            
         except Exception as e:
-            QMessageBox.critical(self, "Database Error", f"Failed to delete student: {e}")
+            # If an error happens again, it will accurately tell you what it is!
+            QMessageBox.critical(self, "Application Error", f"Failed to delete student:\n\n{e}")
 
     def add_student(self):
         dialog = QDialog(self)
