@@ -1892,11 +1892,26 @@ class ReturnPage(QWidget):
                 due_datetime = now
                 
             if now > due_datetime:
-                has_late = True
-                cursor.execute("SELECT penalty_id FROM penalty WHERE penalty_id LIKE 'LATE-%' ORDER BY penalty_id DESC LIMIT 1")
-                last_lt = cursor.fetchone()
-                new_lt_seq = int(last_lt[0].split("-")[1]) + 1 if last_lt else 1
-                late_id = f"LATE-{new_lt_seq:05d}"
+                # --- FIX 1: Prevent Duplicate Late Penalty ---
+                # The auto-sync names penalties exactly "LATE-{rent_id}". Check if it already exists!
+                cursor.execute("SELECT penalty_id FROM penalty WHERE penalty_id = ?", (f"LATE-{rent_id}",))
+                
+                if not cursor.fetchone():
+                    # Only create a penalty if the auto-sync hasn't caught it yet
+                    has_late = True
+                    
+                    # --- FIX 2: Correct ID Format to LATE-MMDDYY-XXX ---
+                    cursor.execute("SELECT penalty_id FROM penalty WHERE penalty_id LIKE ? ORDER BY penalty_id DESC LIMIT 1", (f"LATE-{date_prefix}-%",))
+                    last_lt = cursor.fetchone()
+                    if last_lt:
+                        # Safely grab the last 3 digits after the second dash
+                        new_lt_seq = int(last_lt[0].split("-")[2]) + 1 
+                    else:
+                        new_lt_seq = 1
+                    late_id = f"LATE-{date_prefix}-{new_lt_seq:03d}"
+                else:
+                    # Auto-sync already flagged it. We don't need to insert a duplicate.
+                    has_late = False
             
             # --- BRANCH OUT TO HANDLING BASED ON OPTION ---
             fines = []
@@ -2006,7 +2021,6 @@ class ReturnPage(QWidget):
                 
         except Exception as e:
             QMessageBox.critical(self, "Return Error", f"Failed to record check-in: {e}")
-
 
 class PenaltiesViewCombined(QWidget):
     """Clean widget utilizing a sub-tab bar grouping Outstanding balances alongside transaction logs."""
